@@ -9,7 +9,6 @@ import React, {
 import {
   Dimensions,
   type LayoutChangeEvent,
-  ScrollView,
   type ScrollView as ScrollViewType,
   type StyleProp,
   StyleSheet,
@@ -20,8 +19,10 @@ import {
   type ViewStyle,
 } from "react-native";
 import Animated, {
+  scrollTo as reanimatedScrollTo,
   runOnJS,
   useAnimatedReaction,
+  useAnimatedRef,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -128,6 +129,8 @@ export const MaterialTabBar = forwardRef<ScrollViewType, MaterialTabBarProps>(
     },
     forwardedRef,
   ) => {
+    // useAnimatedRef — worklet から scrollTo するため
+    const animatedScrollRef = useAnimatedRef<ScrollViewType>();
     const localScrollRef = useRef<ScrollViewType | null>(null);
     const hasInitiallyScrolled = useRef(false);
     const lastCenteredIndex = useRef<number | null>(null);
@@ -135,6 +138,10 @@ export const MaterialTabBar = forwardRef<ScrollViewType, MaterialTabBarProps>(
     const setRef = useCallback(
       (node: ScrollViewType | null) => {
         localScrollRef.current = node;
+        // useAnimatedRef の internal に node を同期
+        (
+          animatedScrollRef as unknown as { current: ScrollViewType | null }
+        ).current = node;
         if (typeof forwardedRef === "function") {
           forwardedRef(node);
         } else if (forwardedRef) {
@@ -143,7 +150,7 @@ export const MaterialTabBar = forwardRef<ScrollViewType, MaterialTabBarProps>(
           ).current = node;
         }
       },
-      [forwardedRef],
+      [forwardedRef, animatedScrollRef],
     );
     const totalVirtualTabs = infiniteScroll
       ? tabs.length * VIRTUAL_MULTIPLIER
@@ -193,18 +200,49 @@ export const MaterialTabBar = forwardRef<ScrollViewType, MaterialTabBarProps>(
 
     // activeIndex (SharedValue) に対応する仮想インデックスを算出
     const tabsLength = tabs.length;
-    const activeIndexJsRef = useRef(0);
-    // JS 側で activeIndex 値を持つためのキャッシュ（rendering に使う）
+    // タブラベルの active 色表示用の遅延 state
+    // インジケーター移動とセンタリングは activeIndex SharedValue から worklet で直接駆動
     const [activeIndexState, setActiveIndexState] = useState(0);
+    const setActiveIndexStateDeferred = useCallback((v: number) => {
+      // 次フレームに遅延（現在フレームの gesture 処理を優先）
+      requestAnimationFrame(() => setActiveIndexState(v));
+    }, []);
+    // インジケーター移動 + センタリングを worklet で直接駆動
+    // JS thread を一切経由せず、リスト描画の重さに影響されない
     useAnimatedReaction(
       () => activeIndex.value,
       (current, prev) => {
-        if (current !== prev) {
-          runOnJS(setActiveIndexState)(current);
+        if (current === prev) return;
+
+        const xs = tabLayoutXs.value;
+        const widths = tabLayoutWidths.value;
+        const virtIdx = infiniteScroll ? tabsLength + current : current;
+        const targetX = xs[virtIdx];
+        const targetW = widths[virtIdx];
+        if (targetX !== undefined && targetW !== undefined && targetW > 0) {
+          const inset = targetW * 0.1;
+          indicatorX.value = withTiming(
+            targetX + inset,
+            INDICATOR_TIMING_CONFIG,
+          );
+          indicatorWidth.value = withTiming(
+            targetW - inset * 2,
+            INDICATOR_TIMING_CONFIG,
+          );
+
+          // タブバー中央寄せ: UI thread で直接 scrollTo（JS thread バイパス）
+          if (centerActive && scrollEnabled) {
+            const centerX = targetX + targetW / 2;
+            const scrollX = Math.max(0, centerX - SCREEN_WIDTH / 2);
+            reanimatedScrollTo(animatedScrollRef, scrollX, 0, false);
+          }
+        }
+
+        if (prev !== null) {
+          runOnJS(setActiveIndexStateDeferred)(current);
         }
       },
     );
-    activeIndexJsRef.current = activeIndexState;
     const activeVirtualIndex = infiniteScroll
       ? tabsLength + activeIndexState
       : activeIndexState;
@@ -366,8 +404,9 @@ export const MaterialTabBar = forwardRef<ScrollViewType, MaterialTabBarProps>(
     }
 
     return (
-      <ScrollView
-        ref={setRef}
+      <Animated.ScrollView
+        // biome-ignore lint/suspicious/noExplicitAny: Animated.ScrollView の ref 型
+        ref={setRef as any}
         horizontal
         showsHorizontalScrollIndicator={false}
         scrollEventThrottle={16}
@@ -376,7 +415,7 @@ export const MaterialTabBar = forwardRef<ScrollViewType, MaterialTabBarProps>(
       >
         {renderTabs()}
         {indicator}
-      </ScrollView>
+      </Animated.ScrollView>
     );
   },
 );

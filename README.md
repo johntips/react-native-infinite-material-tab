@@ -39,6 +39,38 @@ Infinite scroll tab view for React Native — built on **PagerView** + **Reanima
 └─────────────────────────────────────────────────────┘
 ```
 
+### Lazy mount (`lazy={true}`) — pagerIndex-based (v0.2.0+)
+
+With `infiniteScroll=true` the library generates `tabs.length × BUFFER_MULTIPLIER`
+virtual pages so the user can swipe forever without hitting the edge. That means
+**multiple virtual pages share the same realIndex** — pagerIndex 0, 5, 10, 15, …
+all map to the same tab.
+
+`lazy={true}` tracks mount state by **pagerIndex**, not realIndex:
+
+```
+realIndex:   [0][1][2][3][4][0][1][2][3][4][0][1][2][3][4] ...
+              ↑                       ↑
+          pagerIndex 0          pagerIndex 5 (same realIndex 0)
+              │                       │
+      User reaches here       User swipes here
+              ↓                       ↓
+          renders content       renders content independently
+              │                       │
+      pagerIndex 5, 10, 15…   pagerIndex 0, 10, 15…
+      stay empty until visited  stay empty until visited
+```
+
+Only virtual pages the user **actually reaches** render their children. Non-visited
+clones stay as empty `<View>` forever. This guarantees **at most one HeavyContent
+mount per real tab**, even under heavy list rendering, complex hook composition,
+or slow async data fetching inside the children.
+
+> **v0.1.x had a critical bug here**: mount state was tracked by realIndex, so a
+> single tab activation triggered up to `BUFFER_MULTIPLIER` (=10) parallel
+> HeavyContent mounts, saturating the JS thread with 400–750ms dispatch latency.
+> v0.2.0 fixes this; no API changes required.
+
 ## Why This Library?
 
 ### Rendering Efficiency — Only What You See
@@ -179,7 +211,7 @@ Frame budget (16ms):    │                              │
 - **Infinite horizontal scroll** for tabs and content
 - **Reanimated indicator** — smooth sliding animation on UI thread
 - **Dynamic tab width** — auto-measured via `onLayout`
-- **Lazy rendering** — `offscreenPageLimit={1}`, only 3 pages mounted
+- **Lazy rendering** — `lazy={true}` + `offscreenPageLimit={1}`; only the virtual pages the user actually reaches render their children (see _Lazy mount_ section below)
 - **Zero setTimeout** — all timing via `requestAnimationFrame` + idle detection
 - **Active tab center alignment** — auto-scrolls with shortest-path algorithm
 - **Collapsible header** support

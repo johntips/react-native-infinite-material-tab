@@ -9,7 +9,7 @@ import React, {
 import {
   Dimensions,
   type LayoutChangeEvent,
-  ScrollView,
+  type ScrollView,
   type StyleProp,
   StyleSheet,
   Text,
@@ -17,8 +17,10 @@ import {
   type ViewStyle,
 } from "react-native";
 import Animated, {
+  scrollTo as reanimatedScrollTo,
   runOnJS,
   useAnimatedReaction,
+  useAnimatedRef,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -112,11 +114,15 @@ export const DefaultTabBar = forwardRef<ScrollView, DefaultTabBarProps>(
     },
     forwardedRef,
   ) => {
+    const animatedScrollRef = useAnimatedRef<ScrollView>();
     const localScrollRef = useRef<ScrollView | null>(null);
 
     const setRef = useCallback(
       (node: ScrollView | null) => {
         localScrollRef.current = node;
+        (
+          animatedScrollRef as unknown as { current: ScrollView | null }
+        ).current = node;
         if (typeof forwardedRef === "function") {
           forwardedRef(node);
         } else if (forwardedRef) {
@@ -124,7 +130,7 @@ export const DefaultTabBar = forwardRef<ScrollView, DefaultTabBarProps>(
             node;
         }
       },
-      [forwardedRef],
+      [forwardedRef, animatedScrollRef],
     );
 
     const hasInitiallyScrolled = useRef(false);
@@ -165,12 +171,37 @@ export const DefaultTabBar = forwardRef<ScrollView, DefaultTabBarProps>(
     }, [tabs, infiniteScroll]);
 
     // activeIndex (SharedValue) を JS 値にブリッジ（タブ色の描画用）
+    // インジケーター移動は worklet で直接駆動、state 更新は rAF で次フレームに遅延
     const [activeIndexState, setActiveIndexState] = useState(0);
+    const setActiveIndexStateDeferred = useCallback((v: number) => {
+      requestAnimationFrame(() => setActiveIndexState(v));
+    }, []);
+    // インジケーター移動を worklet で直接駆動
+    const tabsLength = tabs.length;
     useAnimatedReaction(
       () => activeIndex.value,
       (current, prev) => {
-        if (current !== prev) {
-          runOnJS(setActiveIndexState)(current);
+        if (current === prev) return;
+
+        const xs = tabLayoutXs.value;
+        const widths = tabLayoutWidths.value;
+        const virtIdx = infiniteScroll ? tabsLength + current : current;
+        const targetX = xs[virtIdx];
+        const targetW = widths[virtIdx];
+        if (targetX !== undefined && targetW !== undefined && targetW > 0) {
+          indicatorX.value = withTiming(targetX, INDICATOR_TIMING_CONFIG);
+          indicatorWidth.value = withTiming(targetW, INDICATOR_TIMING_CONFIG);
+
+          // タブバー中央寄せ: worklet 内で直接 scrollTo
+          if (centerActive) {
+            const centerX = targetX + targetW / 2;
+            const scrollX = Math.max(0, centerX - SCREEN_WIDTH / 2);
+            reanimatedScrollTo(animatedScrollRef, scrollX, 0, false);
+          }
+        }
+
+        if (prev !== null) {
+          runOnJS(setActiveIndexStateDeferred)(current);
         }
       },
     );
@@ -269,8 +300,9 @@ export const DefaultTabBar = forwardRef<ScrollView, DefaultTabBarProps>(
     }));
 
     return (
-      <ScrollView
-        ref={setRef}
+      <Animated.ScrollView
+        // biome-ignore lint/suspicious/noExplicitAny: Animated.ScrollView の ref 型
+        ref={setRef as any}
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
@@ -300,7 +332,7 @@ export const DefaultTabBar = forwardRef<ScrollView, DefaultTabBarProps>(
             indicatorStyle,
           ]}
         />
-      </ScrollView>
+      </Animated.ScrollView>
     );
   },
 );
