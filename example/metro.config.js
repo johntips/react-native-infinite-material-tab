@@ -21,8 +21,8 @@ config.resolver.nodeModulesPaths = [
 // Force resolve library from src/ directly (skip lib/ build step for development)
 const librarySrcRoot = path.resolve(libraryRoot, "src");
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-  // Redirect "react-native-infinite-tab-view" imports to src/
-  if (moduleName === "react-native-infinite-tab-view") {
+  // Redirect "react-native-infinite-material-tab" imports to src/
+  if (moduleName === "react-native-infinite-material-tab") {
     return context.resolveRequest(
       context,
       path.resolve(librarySrcRoot, "index"),
