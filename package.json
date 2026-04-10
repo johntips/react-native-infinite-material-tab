@@ -1,0 +1,85 @@
+{
+  "name": "react-native-infinite-material-tab",
+  "version": "0.1.0",
+  "description": "Infinite scroll Material Design tab view for React Native — built on PagerView + Reanimated for native-grade performance. Zero JS thread work during swipe gestures.",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepare": "npm run build",
+    "example": "cd example && npm start",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
+    "test": "NODE_OPTIONS='--no-experimental-detect-module' vitest",
+    "test:watch": "NODE_OPTIONS='--no-experimental-detect-module' vitest --watch",
+    "test:coverage": "NODE_OPTIONS='--no-experimental-detect-module' vitest --coverage"
+  },
+  "keywords": [
+    "react-native",
+    "tab",
+    "tabs",
+    "material",
+    "infinite",
+    "scroll",
+    "collapsible",
+    "header",
+    "pager",
+    "reanimated",
+    "new-architecture",
+    "fabric",
+    "expo"
+  ],
+  "author": "johntips",
+  "license": "MIT",
+  "peerDependencies": {
+    "@shopify/flash-list": ">=1.0.0",
+    "react": ">=19.2.0",
+    "react-native": ">=0.83.0",
+    "react-native-pager-view": ">=6.0.0",
+    "react-native-reanimated": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@shopify/flash-list": {
+      "optional": true
+    },
+    "react-native-reanimated": {
+      "optional": false
+    },
+    "react-native-pager-view": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.10",
+    "@shopify/flash-list": "^2.2.0",
+    "@types/react": "~19.2.0",
+    "@testing-library/react": "^16.0.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "jsdom": "^24.0.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-native": "0.83.4",
+    "react-native-pager-view": "^8.0.0",
+    "react-native-reanimated": "^4.2.1",
+    "react-native-web": "^0.21.0",
+    "typescript": "~5.7.0",
+    "vitest": "^3.2.0"
+  },
+  "files": [
+    "lib",
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/johntips/react-native-infinite-material-tab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/johntips/react-native-infinite-material-tab/issues"
+  },
+  "homepage": "https://github.com/johntips/react-native-infinite-material-tab#readme"
+}
