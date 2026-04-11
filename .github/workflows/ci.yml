@@ -73,7 +73,9 @@ jobs:
 
   e2e-ios:
     name: Maestro E2E (iOS Simulator)
-    runs-on: macos-14
+    # macos-15 ships Xcode 16.x by default (required by React Native 0.83+).
+    # Free for public repos.
+    runs-on: macos-15
     needs: build-library
     timeout-minutes: 60
     env:
@@ -122,8 +124,12 @@ jobs:
           brew update > /dev/null || true
           brew install ffmpeg
 
-      - name: Show Xcode / simulator environment
+      - name: Select latest Xcode and show environment
         run: |
+          # RN 0.83+ requires Xcode >= 16.1 — pick the highest version installed
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
           xcodebuild -version
           xcrun simctl list runtimes | grep iOS || true
           xcrun simctl list devicetypes | grep iPhone || true
