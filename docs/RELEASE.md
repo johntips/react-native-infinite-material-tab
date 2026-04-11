@@ -8,7 +8,7 @@ ambiguity. Every step is idempotent where possible.
 
 ## Flow at a glance
 
-```
+```text
 feature branch ──► PR ──► CI green ──► self-approve ──► squash merge to main
                                                                │
                                                                ▼
@@ -33,7 +33,7 @@ feature branch ──► PR ──► CI green ──► self-approve ──► 
 |---|---|---|
 | `ci.yml` | push / PR to `main` | lint + typecheck + unit test + library build + example metro bundle |
 | `e2e.yml` | `workflow_dispatch` (manual) | Maestro iOS E2E on macOS runner |
-| `publish.yml` | tag push `v*.*.*` or `workflow_dispatch` | npm publish + GitHub Release |
+| `publish.yml` | tag push `v*.*.*` (real publish) or `workflow_dispatch` (dry-run only) | npm publish + GitHub Release |
 
 **Branch protection on `main` enforces:**
 - All PRs require 1 approving review
