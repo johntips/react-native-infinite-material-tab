@@ -36,11 +36,14 @@ feature branch ──► PR ──► CI green ──► self-approve ──► 
 | `publish.yml` | tag push `v*.*.*` (real publish) or `workflow_dispatch` (dry-run only) | npm publish + GitHub Release |
 
 **Branch protection on `main` enforces:**
-- All PRs require 1 approving review
 - All 3 CI jobs must pass (`lint-test`, `build-library`, `build-example`)
 - Conversations must be resolved
 - Linear history (no merge commits)
 - No force-push, no deletion
+- Approvals are **not** required (`required_approving_review_count: 0`).
+  GitHub structurally disallows the PR author from approving their own PR,
+  so this project — maintained solo — relies on CI + conversation-resolution
+  as the quality gate. If more maintainers join, bump this back to 1.
 
 ---
 
@@ -150,11 +153,11 @@ Fix, commit, push; CI reruns automatically.
 
 ---
 
-## 4. Self-approve and merge
+## 4. Merge (no approval step)
 
-> Branch protection requires one approving review. Since the user is the sole
-> maintainer, the user must approve their own PR via the web UI (GitHub allows
-> repo admins to approve their own PRs when `require_last_push_approval=false`).
+Branch protection requires CI to be green and every review conversation to be
+resolved, but it does **not** require approvals — GitHub structurally blocks
+self-approval on a solo repo, so we rely on CI as the gate instead.
 
 Verify the PR is mergeable:
 
@@ -166,8 +169,8 @@ gh pr view <PR_NUMBER> \
 
 Expected:
 - `mergeable: MERGEABLE`
-- `mergeStateStatus: CLEAN` (after approval)
-- `reviewDecision: APPROVED`
+- `mergeStateStatus: CLEAN`
+- `reviewDecision: ""` (empty because no review was required)
 
 Squash merge:
 
@@ -350,7 +353,7 @@ Stored in-repo for reference — matches the actual `PUT /repos/.../branches/mai
   "required_pull_request_reviews": {
     "dismiss_stale_reviews": true,
     "require_code_owner_reviews": false,
-    "required_approving_review_count": 1,
+    "required_approving_review_count": 0,
     "require_last_push_approval": false
   },
   "restrictions": null,
