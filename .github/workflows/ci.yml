@@ -204,8 +204,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .maestro/results/gifs
-          shopt -s globstar nullglob
-          videos=(.maestro/results/debug/**/*.mp4)
+          # macOS ships bash 3.2 which lacks `shopt -s globstar`; use `find` instead.
+          if [ ! -d .maestro/results/debug ]; then
+            echo "No debug directory — Maestro did not run or produced no output."
+            exit 0
+          fi
+          mapfile -t videos < <(find .maestro/results/debug -type f -name '*.mp4' 2>/dev/null || true)
           if [ ${#videos[@]} -eq 0 ]; then
             echo "No .mp4 recordings found (Maestro may not have recorded)."
             exit 0
@@ -323,10 +327,12 @@ jobs:
             fi
             echo ""
             echo "### 📸 Screenshots"
-            shopt -s globstar nullglob
-            pngs=(.maestro/results/debug/**/*.png)
-            if [ ${#pngs[@]} -gt 0 ]; then
-              echo "${#pngs[@]} screenshots captured."
+            png_count=0
+            if [ -d .maestro/results/debug ]; then
+              png_count=$(find .maestro/results/debug -type f -name '*.png' 2>/dev/null | wc -l | tr -d ' ')
+            fi
+            if [ "$png_count" -gt 0 ]; then
+              echo "$png_count screenshots captured."
             else
               echo "_No screenshots captured._"
             fi
