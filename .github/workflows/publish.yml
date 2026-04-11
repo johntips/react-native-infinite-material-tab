@@ -1,14 +1,20 @@
-# Publish to npm — triggered by a semver tag push (`v0.2.1`) or manually.
+# Publish to npm — triggered by a semver tag push (`v0.2.1`).
 #
 # Trust model: this workflow only runs on **main** after a version tag is
 # pushed, which in turn is only possible after a PR has been merged through
 # branch protection (requires 1 approving review + passing CI).
 #
+# `workflow_dispatch` is **dry-run only** — it exercises the full pipeline
+# (lint/typecheck/test/build/verify/publish-in-dry-run-mode) without touching
+# the npm registry or creating a release, so humans can validate changes to
+# this workflow without risking a bad publish. Actual publishing is locked to
+# tag push exclusively.
+#
 # Steps:
 #   1. Check out the tag ref
 #   2. Run the default CI checks one more time (defense in depth)
 #   3. Build the library
-#   4. `npm publish` using the NPM_TOKEN secret
+#   4. `npm publish` using the NPM_TOKEN secret (tag push only — never manual)
 #   5. Create a GitHub Release with the CHANGELOG entry
 name: Publish
 
@@ -16,12 +22,7 @@ name: Publish
   push:
     tags:
       - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "npm publish --dry-run (no actual publish)"
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -85,14 +86,14 @@ jobs:
             exit 1
           fi
 
-      - name: npm publish (dry run)
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+      - name: npm publish (dry run) — workflow_dispatch only
+        if: github.event_name == 'workflow_dispatch'
         run: npm publish --dry-run --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: npm publish
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+      - name: npm publish — tag push only
+        if: github.event_name == 'push'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

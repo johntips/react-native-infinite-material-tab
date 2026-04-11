@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every consumer on **React Native New Architecture (Fabric)** hit a red-box on
 the first page-scroll event:
 
-```
+```text
 Uncaught Error
 _this.props.onPageScroll is not a function (it is Object)
   PagerView.tsx:78:30
