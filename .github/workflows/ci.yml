@@ -339,12 +339,36 @@ jobs:
 
       - name: Post sticky PR comment
         if: github.event_name == 'pull_request' && always()
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: maestro-e2e
-          path: example/.maestro/results/pr-comment.md
-          recreate: true
+        uses: actions/github-script@v7
         continue-on-error: true
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'example/.maestro/results/pr-comment.md';
+            if (!fs.existsSync(path)) {
+              core.warning(`pr-comment.md not found at ${path}`);
+              return;
+            }
+            const body = fs.readFileSync(path, 'utf8');
+            const marker = '<!-- maestro-e2e-sticky -->';
+            const fullBody = `${marker}\n${body}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body: fullBody,
+              });
+              core.info(`Updated sticky comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body: fullBody,
+              });
+              core.info('Created sticky comment');
+            }
 
       - name: Upload Maestro artifacts
         if: always()
