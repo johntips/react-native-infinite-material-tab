@@ -21,7 +21,7 @@ import type {
   PagerViewOnPageSelectedEvent,
 } from "react-native-pager-view";
 import PagerView from "react-native-pager-view";
-import {
+import Animated, {
   runOnJS,
   useAnimatedReaction,
   useDerivedValue,
@@ -32,6 +32,15 @@ import { TabsProvider } from "./Context";
 import { SCREEN_WIDTH, TAB_BAR_HEIGHT } from "./constants";
 import { DefaultTabBar } from "./TabBar";
 import type { DebugLogEvent, TabsContainerProps } from "./types";
+
+// react-native-pager-view v8 の JS 側 `_onPageScroll` wrapper は
+// `this.props.onPageScroll(e)` を関数呼び出しするため、Reanimated の
+// `useEvent` が返す worklet handler (object) をそのまま渡すと Fabric (新アーキ)
+// 上で "_this.props.onPageScroll is not a function (it is Object)" として crash する。
+//
+// Animated.createAnimatedComponent でラップすると Reanimated がネイティブ側で
+// 直接イベント登録を行い、JS 側の wrapper は一切呼ばれないので安全。
+const AnimatedPagerView = Animated.createAnimatedComponent(PagerView);
 
 interface VirtualPage {
   /** 実タブのインデックス (0..tabs.length-1) */
@@ -619,11 +628,15 @@ export const Container: React.FC<TabsContainerProps> = ({
 
         {/* コンテンツエリア（PagerView） */}
         <View style={styles.content}>
-          <PagerView
+          <AnimatedPagerView
             ref={pagerRef}
             style={styles.pagerView}
             initialPage={initialPage}
             offscreenPageLimit={offscreenPageLimit}
+            // Reanimated の useEvent ハンドラは worklet オブジェクトなので
+            // AnimatedPagerView 経由でのみ正常にネイティブ登録される。
+            // 型が合わないため unknown 経由で cast (ランタイムは Reanimated が
+            // 直接ネイティブ側でハンドルするため安全)。
             onPageScroll={
               handlePageScrollHandler as unknown as ComponentProps<
                 typeof PagerView
@@ -633,7 +646,7 @@ export const Container: React.FC<TabsContainerProps> = ({
             onPageScrollStateChanged={handlePageScrollStateChanged}
           >
             {contentViews}
-          </PagerView>
+          </AnimatedPagerView>
         </View>
       </View>
     </TabsProvider>

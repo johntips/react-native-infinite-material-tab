@@ -405,7 +405,6 @@ export const MaterialTabBar = forwardRef<ScrollViewType, MaterialTabBarProps>(
 
     return (
       <Animated.ScrollView
-        // biome-ignore lint/suspicious/noExplicitAny: Animated.ScrollView の ref 型
         ref={setRef as any}
         horizontal
         showsHorizontalScrollIndicator={false}

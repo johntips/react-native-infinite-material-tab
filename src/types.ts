@@ -96,7 +96,7 @@ export interface TabsContextValue {
   /** アクティブタブ + 隣接タブのインデックス配列（SharedValue） */
   nearbyIndexes: SharedValue<number[]>;
   tabs: Array<{ name: string; label: string }>;
-  // biome-ignore lint/suspicious/noExplicitAny: Animated.Value の型が Reanimated と混在しないため
+  /** Animated.Value / Reanimated SharedValue の型互換のため any 許容 */
   scrollY: any;
   headerHeight: number;
   infiniteScroll: boolean;

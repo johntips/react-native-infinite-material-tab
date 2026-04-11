@@ -1,0 +1,298 @@
+# Maestro iOS E2E — **manual only** (`workflow_dispatch`).
+#
+# This is the heavy workflow that:
+#   1. Boots an iOS Simulator on a macOS runner (macos-15, Xcode 16+)
+#   2. Builds the example app with `expo prebuild` + `xcodebuild`
+#   3. Installs the app on the simulator
+#   4. Records the screen via `simctl io recordVideo`
+#   5. Runs every Maestro flow under `example/.maestro/flows`
+#   6. Converts the recording to a compact GIF via ffmpeg
+#   7. Uploads screenshots / JUnit / log / GIF as a 7-day artifact
+#   8. Posts a sticky PR comment with results (if triggered from a PR branch)
+#
+# Why manual? A macOS runner run takes 15–25 minutes — too slow for every PR.
+# The default `CI` workflow already catches lint / typecheck / unit tests /
+# library build / example metro-bundle build on every push. When a PR touches
+# the render pipeline we trigger this workflow manually from the Actions tab.
+#
+# Free for public repos (GitHub gives unlimited standard macOS minutes).
+name: E2E (iOS, Maestro)
+
+"on":
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref (branch, tag or SHA) to run against"
+        required: false
+        default: ""
+
+concurrency:
+  group: e2e-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  e2e-ios:
+    name: Maestro E2E (iOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: 120000
+      MAESTRO_CLI_NO_ANALYTICS: "1"
+      # Pin Maestro version for reproducibility. Update intentionally when
+      # adopting new CLI features; avoids silent breakage from upstream releases.
+      MAESTRO_VERSION: "2.4.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install root deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build library
+        run: pnpm build
+
+      - name: Install example deps
+        working-directory: example
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm install --legacy-peer-deps
+          fi
+
+      - name: Install Maestro CLI (pinned version)
+        run: |
+          # The installer reads MAESTRO_VERSION from the environment and
+          # downloads that exact release instead of "latest".
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Maestro install (must match MAESTRO_VERSION)
+        run: |
+          set -euo pipefail
+          INSTALLED=$(maestro --version)
+          echo "Installed: $INSTALLED, Expected: $MAESTRO_VERSION"
+          if [ "$INSTALLED" != "$MAESTRO_VERSION" ]; then
+            echo "::error::Maestro version mismatch — installer ignored MAESTRO_VERSION"
+            exit 1
+          fi
+
+      - name: Install ffmpeg
+        run: |
+          brew update > /dev/null || true
+          brew install ffmpeg
+
+      - name: Select latest Xcode and show environment
+        run: |
+          # RN 0.83+ requires Xcode >= 16.1 — pick the highest version installed
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST/Contents/Developer"
+          xcodebuild -version
+          xcrun simctl list runtimes | grep iOS || true
+          xcrun simctl list devicetypes | grep iPhone || true
+
+      - name: Boot iOS Simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          for name in "iPhone 15" "iPhone 14" "iPhone 13"; do
+            if xcrun simctl list devicetypes | grep -q "$name"; then
+              DEVICE_NAME="$name"
+              break
+            fi
+          done
+          RUNTIME=$(xcrun simctl list runtimes | grep -E "^iOS " | tail -1 | awk '{print $NF}')
+          echo "Creating simulator: $DEVICE_NAME ($RUNTIME)"
+          UDID=$(xcrun simctl create "maestro-e2e" "$DEVICE_NAME" "$RUNTIME")
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Expo prebuild (iOS)
+        working-directory: example
+        run: npx expo prebuild --platform ios --clean --non-interactive
+
+      - name: Install CocoaPods
+        working-directory: example/ios
+        run: pod install
+
+      - name: Build iOS example app
+        working-directory: example
+        run: |
+          set -euo pipefail
+          # .xcworkspace is a directory — use -d so ls returns the dir itself
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "Building workspace=$WORKSPACE scheme=$SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build
+
+      - name: Install example app on simulator
+        working-directory: example
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find build/Build/Products -type d -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::Could not find built .app"
+            find build -name "*.app" -type d || true
+            exit 1
+          fi
+          echo "Installing $APP_PATH"
+          xcrun simctl install booted "$APP_PATH"
+
+      - name: Start simulator screen recording
+        working-directory: example
+        run: |
+          mkdir -p .maestro/results
+          xcrun simctl io booted recordVideo \
+            --codec=h264 \
+            --mask=ignored \
+            --force \
+            .maestro/results/e2e-session.mp4 &
+          echo $! > .maestro/results/recorder.pid
+          echo "Started recorder pid=$(cat .maestro/results/recorder.pid)"
+          sleep 1
+
+      - name: Run Maestro flows
+        id: maestro
+        working-directory: example
+        continue-on-error: true
+        run: |
+          mkdir -p .maestro/results
+          maestro test .maestro/flows \
+            --format junit \
+            --output .maestro/results/junit.xml \
+            --debug-output .maestro/results/debug \
+            2>&1 | tee .maestro/results/maestro.log
+
+      - name: Stop simulator screen recording
+        if: always()
+        working-directory: example
+        run: |
+          set +e
+          if [ -f .maestro/results/recorder.pid ]; then
+            PID=$(cat .maestro/results/recorder.pid)
+            echo "Stopping recorder pid=$PID"
+            kill -INT "$PID" 2>/dev/null || true
+            for i in $(seq 1 15); do
+              if ! kill -0 "$PID" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            kill -9 "$PID" 2>/dev/null || true
+          fi
+          ls -lh .maestro/results/e2e-session.mp4 2>/dev/null || echo "(no mp4)"
+
+      - name: Convert recording to GIF (size-optimized)
+        if: always()
+        working-directory: example
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p .maestro/results/gifs
+          video=".maestro/results/e2e-session.mp4"
+          if [ ! -f "$video" ] || [ ! -s "$video" ]; then
+            echo "No usable mp4 to convert — skipping."
+            exit 0
+          fi
+          out=".maestro/results/gifs/e2e-session.gif"
+          echo "Converting $video → $out"
+          # fps=8, width=320, 64-color palette = ~1/20 of mp4 size
+          ffmpeg -y -i "$video" \
+            -vf "fps=8,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
+            -loop 0 "$out" 2>&1 | tail -5
+          if [ -f "$out" ]; then
+            echo "  mp4  size: $(du -h "$video" | cut -f1)"
+            echo "  gif  size: $(du -h "$out" | cut -f1)"
+          fi
+
+      - name: Summarize results (step summary)
+        if: always()
+        working-directory: example
+        run: |
+          {
+            echo "## 📱 Maestro E2E Results"
+            echo ""
+            if [ -f .maestro/results/junit.xml ]; then
+              python3 - <<'PY'
+          import xml.etree.ElementTree as ET, sys
+          try:
+              root = ET.parse(".maestro/results/junit.xml").getroot()
+          except Exception as e:
+              print(f"_junit parse failed: {e}_")
+              sys.exit(0)
+          suites = root.findall(".//testsuite") or [root]
+          total = failed = 0
+          rows = ["| Flow | Status | Time |", "|---|---|---|"]
+          for suite in suites:
+              for case in suite.findall("testcase"):
+                  total += 1
+                  name = case.get("name", "?")
+                  time = case.get("time", "?")
+                  if case.find("failure") is not None or case.find("error") is not None:
+                      failed += 1
+                      rows.append(f"| `{name}` | ❌ failed | {time}s |")
+                  else:
+                      rows.append(f"| `{name}` | ✅ passed | {time}s |")
+          passed = total - failed
+          emoji = "✅" if failed == 0 else "❌"
+          print(f"{emoji} **{passed}/{total} flows passed**")
+          print()
+          print("\n".join(rows))
+          PY
+            else
+              echo "_No JUnit report produced._"
+            fi
+            echo ""
+            echo "### GIF sizes"
+            if ls .maestro/results/gifs/*.gif >/dev/null 2>&1; then
+              echo '```'
+              du -h .maestro/results/gifs/*.gif
+              echo '```'
+            else
+              echo "_No GIFs produced._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Maestro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-results-${{ github.run_id }}
+          path: |
+            example/.maestro/results/**
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Fail job if Maestro failed
+        if: always() && steps.maestro.outcome == 'failure'
+        run: |
+          echo "::error::Maestro flows failed — see artifact for details."
+          exit 1

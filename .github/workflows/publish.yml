@@ -1,0 +1,137 @@
+# Publish to npm — triggered by a semver tag push (`v0.2.1`).
+#
+# Trust model: this workflow only runs on **main** after a version tag is
+# pushed, which in turn is only possible after a PR has been merged through
+# branch protection (requires 1 approving review + passing CI).
+#
+# `workflow_dispatch` is **dry-run only** — it exercises the full pipeline
+# (lint/typecheck/test/build/verify/publish-in-dry-run-mode) without touching
+# the npm registry or creating a release, so humans can validate changes to
+# this workflow without risking a bad publish. Actual publishing is locked to
+# tag push exclusively.
+#
+# Steps:
+#   1. Check out the tag ref
+#   2. Run the default CI checks one more time (defense in depth)
+#   3. Build the library
+#   4. `npm publish` using the NPM_TOKEN secret (tag push only — never manual)
+#   5. Create a GitHub Release with the CHANGELOG entry
+name: Publish
+
+"on":
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build and publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm tsc --noEmit
+
+      - name: Unit test
+        run: pnpm test
+
+      - name: Build library
+        run: pnpm build
+
+      - name: Verify lib output
+        run: |
+          test -d lib
+          test -f lib/index.js
+          test -f lib/index.d.ts
+          ls -lh lib/
+
+      - name: Verify version matches tag
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "tag=$TAG_VERSION pkg=$PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match package.json ($PKG_VERSION)"
+            exit 1
+          fi
+
+      - name: npm publish (dry run) — workflow_dispatch only
+        if: github.event_name == 'workflow_dispatch'
+        run: npm publish --dry-run --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: npm publish — tag push only
+        if: github.event_name == 'push'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Extract CHANGELOG section for this version
+        if: github.event_name == 'push'
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extract the section between "## [VERSION]" and the next "## ["
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/         { exit }
+            flag                     { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          echo "--- Release notes ---"
+          cat /tmp/release-notes.md
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            cat /tmp/release-notes.md
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = context.ref.replace('refs/tags/', '');
+            const notes = fs.readFileSync('/tmp/release-notes.md', 'utf8');
+            const { owner, repo } = context.repo;
+            await github.rest.repos.createRelease({
+              owner, repo,
+              tag_name: tag,
+              name: tag,
+              body: notes,
+              draft: false,
+              prerelease: false,
+            });
+            core.info(`Created release ${tag}`);

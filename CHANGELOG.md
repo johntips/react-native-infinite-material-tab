@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-04-11
+
+### 🔴 Fixed — Fabric crash: `onPageScroll is not a function (it is Object)`
+
+Every consumer on **React Native New Architecture (Fabric)** hit a red-box on
+the first page-scroll event:
+
+```text
+Uncaught Error
+_this.props.onPageScroll is not a function (it is Object)
+  PagerView.tsx:78:30
+```
+
+**Root cause**: `Container.tsx` passed the Reanimated `useEvent` worklet handler
+(a _WorkletEventHandler object_, not a function) directly to a **raw** `<PagerView>`.
+Under the New Architecture, `react-native-pager-view`'s JS-side `_onPageScroll`
+wrapper calls `this.props.onPageScroll(e)` unconditionally — an object passed
+through `as unknown as …` casts silently breaks at runtime.
+
+**Fix**: wrap `PagerView` with `Animated.createAnimatedComponent(PagerView)`.
+Reanimated then registers the worklet handler natively and the JS wrapper is
+bypassed. The same pattern was already used in `FlatList.tsx` (`AnimatedFlatList`);
+the PagerView wiring was the only holdout.
+
+### Why Paper didn't catch it
+
+The example app shipped without `newArchEnabled`, defaulting to Paper, where
+the native event bridge routed `onPageScroll` to the worklet directly without
+going through `ReactFabric-dev.js`'s JS dispatch path. The library therefore
+never crashed in Paper but always crashed in Fabric.
+
+### Regression guards added
+
+- **Unit test** (`src/__tests__/pagerview-wiring.test.ts`): static source scan
+  verifying `Container.tsx` uses `AnimatedPagerView`, never raw `<PagerView>`
+- **example/app.json**: `newArchEnabled: true` — example app now runs Fabric,
+  matching production consumers
+- **New default CI job**: `build-example` runs `expo export:embed` (Metro bundle)
+  on every push/PR — would have caught the missing `createAnimatedComponent`
+  import at build time
+- **Maestro E2E** moved to its own `workflow_dispatch`-only workflow
+  (`.github/workflows/e2e.yml`) so the default CI stays fast, but the full
+  device-level validation remains available on demand
+
+### Migration
+
+No API changes. Bump and rebuild:
+
+```bash
+pnpm add react-native-infinite-material-tab@0.2.1
+# iOS
+cd ios && pod install
+# Restart Metro with cache clear
+pnpm start -- --clear
+```
+
+---
+
 ## [0.2.0] - 2026-04-11
 
 ### 🎯 Performance — Critical lazy mount fix (`lazy={true}`)

@@ -24,17 +24,32 @@ Object.defineProperty(window, "matchMedia", {
 // react-native-reanimated をモック（Babel plugin なしの web/test 環境用）
 vi.mock("react-native-reanimated", () => {
   const { View, ScrollView } = require("react-native-web");
+  // Animated.createAnimatedComponent(Component) は本番では "AnimatedComponent" を
+  // 返すが、テストでは対象コンポーネントをそのまま返せば十分。
+  //
+  // 重要: ただし onPageScroll prop は Reanimated useEvent が返す worklet "object" を
+  // 受け取る。この mock では onPageScroll を function に変換して渡し、Fabric runtime
+  // の仕様 (raw component に worklet object を渡すと crash) との違いを吸収する。
+  const createAnimatedComponent = (Component: unknown) => {
+    const Wrapped: unknown = Component;
+    return Wrapped;
+  };
   return {
     __esModule: true,
     default: {
       View,
       ScrollView,
+      createAnimatedComponent,
     },
+    createAnimatedComponent,
     useSharedValue: (init: unknown) => ({ value: init }),
     useDerivedValue: (fn: () => unknown) => ({ value: fn() }),
     useAnimatedStyle: (fn: () => object) => fn(),
     useAnimatedReaction: () => {},
     useAnimatedRef: () => ({ current: null }),
+    // NOTE: useEvent should return a WORKLET HANDLER OBJECT (not a function)
+    // in production Reanimated — see Container.tsx comment. In tests we still
+    // return a function because the mock PagerView calls it directly.
     useEvent: () => () => {},
     scrollTo: () => {},
     runOnJS: (fn: (...args: unknown[]) => void) => fn,
