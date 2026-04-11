@@ -1,0 +1,49 @@
+# Tab-tap navigation — tap each named tab label and verify the matching
+# content list becomes visible. This proves:
+#   1. Tab bar labels are hit-testable
+#   2. Tapping a label changes the active page (PagerView goes to target)
+#   3. The list for that category mounts
+appId: com.johntips.infinitematerialtabexample
+tags:
+  - tab-tap
+  - ci
+---
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "list-tech"
+    timeout: 10000
+
+# Tap Sports tab (idx 2)
+- tapOn: "Sports"
+- extendedWaitUntil:
+    visible:
+      id: "list-sports"
+    timeout: 8000
+- takeScreenshot: 04-tab-sports
+
+# Tap Science tab (idx 4)
+- tapOn: "Science"
+- extendedWaitUntil:
+    visible:
+      id: "list-science"
+    timeout: 8000
+- takeScreenshot: 04-tab-science
+
+# Tap Travel tab (idx 8)
+- tapOn: "Travel"
+- extendedWaitUntil:
+    visible:
+      id: "list-travel"
+    timeout: 8000
+- takeScreenshot: 04-tab-travel
+
+# Tap back to Tech (idx 0, wraps back)
+- tapOn: "Tech"
+- extendedWaitUntil:
+    visible:
+      id: "list-tech"
+    timeout: 8000
+- takeScreenshot: 04-tab-back-tech

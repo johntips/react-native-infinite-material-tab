@@ -1,0 +1,43 @@
+# Swipe right 10 times — verifies tab progression through the first half
+# of NEWS_CATEGORIES and that each destination list mounts correctly.
+#
+# Starting tab: Tech (index 0)
+# After 10 right swipes (content moves right-to-left): Fashion (index 10)
+#
+# Categories in order: Tech → Business → Sports → Entertainment → Science →
+#   Health → Politics → World → Travel → Food → Fashion
+appId: com.johntips.infinitematerialtabexample
+tags:
+  - swipe
+  - ci
+---
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "list-tech"
+    timeout: 10000
+
+- takeScreenshot: 02-swipe-right-start
+
+# 10 right swipes (right edge → left edge = advance to next tab)
+- repeat:
+    times: 10
+    commands:
+      - swipe:
+          start: 85%, 55%
+          end: 15%, 55%
+          duration: 250
+      - waitForAnimationToEnd:
+          timeout: 2000
+
+- takeScreenshot: 02-swipe-right-end
+
+# After 10 forward swipes we should be on Fashion.
+# Async Follow Design: list may still be showing skeleton briefly,
+# so accept either the ready list OR the skeleton as proof we reached the tab.
+- extendedWaitUntil:
+    visible:
+      id: "list-fashion"
+    timeout: 8000

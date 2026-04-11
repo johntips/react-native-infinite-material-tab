@@ -1,0 +1,40 @@
+# Swipe left 10 times — verifies infinite-scroll wrap-around works.
+#
+# Starting tab: Tech (index 0)
+# After 10 left swipes (content moves left-to-right = go back):
+#   tech(0) → lifestyle(19) → arts(18) → ... → automotive(10)
+# Expected final tab: Automotive (index 10 from the end)
+appId: com.johntips.infinitematerialtabexample
+tags:
+  - swipe
+  - ci
+---
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "list-tech"
+    timeout: 10000
+
+- takeScreenshot: 03-swipe-left-start
+
+# 10 left swipes (left edge → right edge = go back to previous tab)
+- repeat:
+    times: 10
+    commands:
+      - swipe:
+          start: 15%, 55%
+          end: 85%, 55%
+          duration: 250
+      - waitForAnimationToEnd:
+          timeout: 2000
+
+- takeScreenshot: 03-swipe-left-end
+
+# After 10 back-swipes from tech (index 0) with 20 categories:
+# idx = (0 - 10 + 20) % 20 = 10 → automotive
+- extendedWaitUntil:
+    visible:
+      id: "list-automotive"
+    timeout: 8000

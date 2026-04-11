@@ -1,11 +1,19 @@
 # react-native-infinite-material-tab
 
-[![npm version](https://img.shields.io/npm/v/react-native-infinite-material-tab.svg?labelColor=171717&color=0866d6)](https://www.npmjs.com/package/react-native-infinite-material-tab)
+[![CI](https://img.shields.io/github/actions/workflow/status/johntips/react-native-infinite-material-tab/ci.yml?branch=main&label=CI&labelColor=171717&logo=github)](https://github.com/johntips/react-native-infinite-material-tab/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/react-native-infinite-material-tab.svg?label=npm&labelColor=171717&color=0866d6)](https://www.npmjs.com/package/react-native-infinite-material-tab)
+[![npm downloads](https://img.shields.io/npm/dm/react-native-infinite-material-tab.svg?label=downloads&labelColor=171717&color=0866d6)](https://www.npmjs.com/package/react-native-infinite-material-tab)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?labelColor=171717)](./LICENSE)
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/johntips/react-native-infinite-material-tab?utm_source=oss&utm_medium=github&utm_campaign=johntips%2Freact-native-infinite-material-tab&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
-[![Tested on BrowserStack](https://img.shields.io/badge/Tested_on-BrowserStack-FC7E0F.svg?labelColor=171717)](https://www.browserstack.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?labelColor=171717&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React Native](https://img.shields.io/badge/React_Native-0.83-61DAFB?labelColor=171717&logo=react&logoColor=white)](https://reactnative.dev/)
+[![Expo](https://img.shields.io/badge/Expo-55%2B-000020?labelColor=171717&logo=expo&logoColor=white)](https://expo.dev/)
 
-> This project is tested with BrowserStack.
+[![Renovate enabled](https://img.shields.io/badge/renovate-enabled-1A1F6C?labelColor=171717&logo=renovatebot&logoColor=white)](https://github.com/apps/renovate)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025E8C?labelColor=171717&logo=dependabot&logoColor=white)](https://github.com/johntips/react-native-infinite-material-tab/network/updates)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/johntips/react-native-infinite-material-tab?utm_source=oss&utm_medium=github&utm_campaign=johntips%2Freact-native-infinite-material-tab&labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+[![Maestro E2E](https://img.shields.io/badge/E2E-Maestro-7B3FE4?labelColor=171717&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEyIDJMMiAyMmgyMEwxMiAyem0wIDVsNyAxM0g1bDctMTN6Ii8+PC9zdmc+)](https://maestro.mobile.dev)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?labelColor=171717)](https://github.com/johntips/react-native-infinite-material-tab/pulls)
+[![GitHub stars](https://img.shields.io/github/stars/johntips/react-native-infinite-material-tab?style=flat&labelColor=171717&logo=github)](https://github.com/johntips/react-native-infinite-material-tab/stargazers)
 
 Infinite scroll tab view for React Native — built on **PagerView** + **Reanimated** for native-grade performance.
 

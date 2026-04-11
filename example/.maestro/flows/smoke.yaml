@@ -1,0 +1,24 @@
+# Smoke test — app launches, banner + first tab render, FlashList mounts.
+#
+# This is the fastest sanity check. If it fails, everything else is skipped.
+appId: com.johntips.infinitematerialtabexample
+tags:
+  - smoke
+  - ci
+---
+- launchApp:
+    clearState: true
+
+# Banner header is visible
+- assertVisible:
+    id: "banner-header"
+- assertVisible:
+    id: "banner-title"
+
+# Wait for first tab to finish async mount (InteractionManager + 300ms mock query)
+- extendedWaitUntil:
+    visible:
+      id: "list-tech"
+    timeout: 10000
+
+- takeScreenshot: 01-smoke-initial

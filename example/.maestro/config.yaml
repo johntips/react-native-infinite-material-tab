@@ -1,0 +1,9 @@
+appId: com.johntips.infinitematerialtabexample
+---
+executionOrder:
+  flowsOrder:
+    - smoke
+    - swipe-right-10
+    - swipe-left-10
+    - tab-tap-navigation
+    - list-scroll-isolation

@@ -53,7 +53,7 @@ export const NewsList: React.FC<NewsListProps> = memo(({ category }) => {
   }, [isActive, ready]);
 
   if (!ready) {
-    return <NewsListSkeleton />;
+    return <NewsListSkeleton category={category} />;
   }
 
   return <HeavyNewsListContent category={category} />;
@@ -65,9 +65,12 @@ NewsList.displayName = "NewsList";
  * スケルトン（hooks ゼロ — 即座にレンダリング）
  * タブスワイプ中は必ずこれが表示される。
  */
-function NewsListSkeleton() {
+function NewsListSkeleton({ category }: { category?: string }) {
+  const testID = category
+    ? `list-${category.toLowerCase().replace(/\s/g, "-")}-skeleton`
+    : "list-skeleton";
   return (
-    <View style={styles.container}>
+    <View style={styles.container} testID={testID}>
       {Array.from({ length: 5 }).map((_, i) => (
         <View key={i} style={styles.skeletonCard}>
           <View style={styles.skeletonImage} />
@@ -259,12 +262,14 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
     return sortedData.filter((item) => item.tags.includes(filterTag));
   }, [sortedData, filterTag]);
 
+  const containerTestID = `list-${category.toLowerCase().replace(/\s/g, "-")}`;
+
   if (isPending || !data) {
-    return <NewsListSkeleton />;
+    return <NewsListSkeleton category={category} />;
   }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} testID={containerTestID}>
       <Tabs.FlashList
         data={filteredData}
         renderItem={renderItem}

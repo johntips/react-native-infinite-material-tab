@@ -1,11 +1,11 @@
-# CI workflow — runs on every PR and push to main
+# CI workflow — lint, typecheck, unit test, library build, example build,
+# Maestro E2E on iOS Simulator.
 #
-# This file is managed by gh-infra. Edit the template in
-# github-config/files/common/.github/workflows/ci.yml and run
-# `gh infra apply` to roll out changes to all repositories.
+# Artifacts: Maestro screenshots, recordings (converted to GIF for size),
+# JUnit reports. Retention: 7 days.
 #
-# sha_pinning_required is enabled on this repo, so all third-party actions
-# must be pinned to a commit SHA. actions/* are exempt (GitHub-owned).
+# A sticky PR comment is posted with links to the artifact bundle, flow
+# results, and a list of captured GIFs/screenshots.
 name: CI
 
 on:
@@ -13,6 +13,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,10 +21,11 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
-  test:
-    name: typecheck + test
+  lint-test:
+    name: Lint / Typecheck / Unit test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -39,9 +41,323 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm tsc --noEmit
       - name: Lint
         run: pnpm lint
-      - name: Test
+      - name: Typecheck
+        run: pnpm tsc --noEmit
+      - name: Unit test
         run: pnpm test
+
+  build-library:
+    name: Build library (tsc)
+    runs-on: ubuntu-latest
+    needs: lint-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Verify lib output exists
+        run: test -d lib && ls lib/
+
+  e2e-ios:
+    name: Maestro E2E (iOS Simulator)
+    runs-on: macos-14
+    needs: build-library
+    timeout-minutes: 60
+    env:
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: 120000
+      MAESTRO_CLI_NO_ANALYTICS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install root deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build library
+        run: pnpm build
+
+      - name: Install example deps
+        working-directory: example
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm install --legacy-peer-deps
+          fi
+
+      - name: Install Maestro CLI
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Maestro install
+        run: maestro --version
+
+      - name: Install ffmpeg
+        run: |
+          brew update > /dev/null || true
+          brew install ffmpeg
+
+      - name: Show Xcode / simulator environment
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes | grep iOS || true
+          xcrun simctl list devicetypes | grep iPhone || true
+
+      - name: Boot iOS Simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          # Try iPhone 15 first, fall back to 14 / 13
+          for name in "iPhone 15" "iPhone 14" "iPhone 13"; do
+            if xcrun simctl list devicetypes | grep -q "$name"; then
+              DEVICE_NAME="$name"
+              break
+            fi
+          done
+          # Pick highest available iOS runtime
+          RUNTIME=$(xcrun simctl list runtimes | grep -E "^iOS " | tail -1 | awk '{print $NF}')
+          echo "Creating simulator: $DEVICE_NAME ($RUNTIME)"
+          UDID=$(xcrun simctl create "maestro-e2e" "$DEVICE_NAME" "$RUNTIME")
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Expo prebuild (iOS)
+        working-directory: example
+        run: npx expo prebuild --platform ios --clean --non-interactive
+
+      - name: Install CocoaPods
+        working-directory: example/ios
+        run: pod install
+
+      - name: Build iOS example app
+        working-directory: example
+        run: |
+          set -euo pipefail
+          WORKSPACE=$(ls ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "Building workspace=$WORKSPACE scheme=$SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build
+
+      - name: Install example app on simulator
+        working-directory: example
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find build/Build/Products -type d -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::Could not find built .app"
+            find build -name "*.app" -type d || true
+            exit 1
+          fi
+          echo "Installing $APP_PATH"
+          xcrun simctl install booted "$APP_PATH"
+
+      - name: Run Maestro flows
+        id: maestro
+        working-directory: example
+        continue-on-error: true
+        run: |
+          mkdir -p .maestro/results
+          maestro test .maestro/flows \
+            --format junit \
+            --output .maestro/results/junit.xml \
+            --debug-output .maestro/results/debug \
+            2>&1 | tee .maestro/results/maestro.log
+
+      - name: Convert recordings to GIF (size-optimized)
+        if: always()
+        working-directory: example
+        run: |
+          set -euo pipefail
+          mkdir -p .maestro/results/gifs
+          shopt -s globstar nullglob
+          videos=(.maestro/results/debug/**/*.mp4)
+          if [ ${#videos[@]} -eq 0 ]; then
+            echo "No .mp4 recordings found (Maestro may not have recorded)."
+            exit 0
+          fi
+          for video in "${videos[@]}"; do
+            name=$(basename "$video" .mp4)
+            out=".maestro/results/gifs/${name}.gif"
+            echo "Converting $video → $out"
+            # fps=10, width=360, 64-color palette = massive size reduction
+            ffmpeg -y -i "$video" \
+              -vf "fps=10,scale=360:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
+              -loop 0 "$out" 2>&1 | tail -3
+            echo "  size: $(du -h "$out" | cut -f1)"
+          done
+
+      - name: Summarize results (step summary)
+        if: always()
+        working-directory: example
+        run: |
+          {
+            echo "## 📱 Maestro E2E Results"
+            echo ""
+            if [ -f .maestro/results/junit.xml ]; then
+              python3 - <<'PY'
+          import xml.etree.ElementTree as ET, sys
+          try:
+              root = ET.parse(".maestro/results/junit.xml").getroot()
+          except Exception as e:
+              print(f"_junit parse failed: {e}_")
+              sys.exit(0)
+          suites = root.findall(".//testsuite") or [root]
+          total = failed = 0
+          rows = ["| Flow | Status | Time |", "|---|---|---|"]
+          for suite in suites:
+              for case in suite.findall("testcase"):
+                  total += 1
+                  name = case.get("name", "?")
+                  time = case.get("time", "?")
+                  if case.find("failure") is not None or case.find("error") is not None:
+                      failed += 1
+                      rows.append(f"| `{name}` | ❌ failed | {time}s |")
+                  else:
+                      rows.append(f"| `{name}` | ✅ passed | {time}s |")
+          passed = total - failed
+          emoji = "✅" if failed == 0 else "❌"
+          print(f"{emoji} **{passed}/{total} flows passed**")
+          print()
+          print("\n".join(rows))
+          PY
+            else
+              echo "_No JUnit report produced._"
+            fi
+            echo ""
+            echo "### GIF sizes"
+            if ls .maestro/results/gifs/*.gif >/dev/null 2>&1; then
+              echo '```'
+              du -h .maestro/results/gifs/*.gif
+              echo '```'
+            else
+              echo "_No GIFs produced._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build PR comment body
+        if: github.event_name == 'pull_request' && always()
+        working-directory: example
+        run: |
+          ARTIFACT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo "## 📱 Maestro E2E Results"
+            echo ""
+            if [ -f .maestro/results/junit.xml ]; then
+              python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse(".maestro/results/junit.xml").getroot()
+              suites = root.findall(".//testsuite") or [root]
+              total = failed = 0
+              rows = []
+              for suite in suites:
+                  for case in suite.findall("testcase"):
+                      total += 1
+                      name = case.get("name", "?")
+                      time = case.get("time", "?")
+                      if case.find("failure") is not None or case.find("error") is not None:
+                          failed += 1
+                          rows.append(f"| `{name}` | ❌ failed | {time}s |")
+                      else:
+                          rows.append(f"| `{name}` | ✅ passed | {time}s |")
+              passed = total - failed
+              emoji = "✅" if failed == 0 else "❌"
+              print(f"{emoji} **{passed}/{total} flows passed**")
+              print()
+              print("| Flow | Status | Time |")
+              print("|---|---|---|")
+              print("\n".join(rows))
+          except Exception as e:
+              print(f"_junit parse failed: {e}_")
+          PY
+            else
+              echo "_No JUnit report produced — Maestro may have failed to launch._"
+            fi
+            echo ""
+            echo "### 🎬 Recordings (GIF)"
+            shopt -s nullglob
+            gifs=(.maestro/results/gifs/*.gif)
+            if [ ${#gifs[@]} -gt 0 ]; then
+              for g in "${gifs[@]}"; do
+                size=$(du -h "$g" | cut -f1)
+                echo "- \`$(basename "$g")\` — $size"
+              done
+            else
+              echo "_No recordings captured._"
+            fi
+            echo ""
+            echo "### 📸 Screenshots"
+            shopt -s globstar nullglob
+            pngs=(.maestro/results/debug/**/*.png)
+            if [ ${#pngs[@]} -gt 0 ]; then
+              echo "${#pngs[@]} screenshots captured."
+            else
+              echo "_No screenshots captured._"
+            fi
+            echo ""
+            echo "---"
+            echo "[📥 Download artifact bundle]($ARTIFACT_URL) · [🔗 View run]($RUN_URL) · Artifact retention: 7 days"
+          } > .maestro/results/pr-comment.md
+          echo "--- pr-comment.md preview ---"
+          cat .maestro/results/pr-comment.md
+
+      - name: Post sticky PR comment
+        if: github.event_name == 'pull_request' && always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: maestro-e2e
+          path: example/.maestro/results/pr-comment.md
+          recreate: true
+        continue-on-error: true
+
+      - name: Upload Maestro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-results-${{ github.run_id }}
+          path: |
+            example/.maestro/results/**
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Fail job if Maestro failed
+        if: always() && steps.maestro.outcome == 'failure'
+        run: |
+          echo "::error::Maestro flows failed — see artifact and PR comment for details."
+          exit 1

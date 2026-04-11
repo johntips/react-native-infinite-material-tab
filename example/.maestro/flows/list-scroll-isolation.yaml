@@ -1,0 +1,62 @@
+# List-scroll isolation — verifies that vertical list scrolling and
+# horizontal tab swiping are independent. Scroll the inner FlashList down,
+# then swipe horizontally to the next tab. Tab change must not be blocked
+# by the list's scroll gesture, and returning to the original tab should
+# still show content.
+#
+# This exercises the library's defining property: zero JS thread work
+# during gestures — FlashList and PagerView operate on separate gesture
+# handlers.
+appId: com.johntips.infinitematerialtabexample
+tags:
+  - list-scroll
+  - ci
+---
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible:
+      id: "list-tech"
+    timeout: 10000
+
+# Scroll the inner list down a few times
+- repeat:
+    times: 4
+    commands:
+      - swipe:
+          start: 50%, 80%
+          end: 50%, 25%
+          duration: 300
+      - waitForAnimationToEnd:
+          timeout: 1500
+
+- takeScreenshot: 05-list-scrolled
+
+# Horizontal swipe to next tab (Business) — must still be responsive
+- swipe:
+    start: 85%, 55%
+    end: 15%, 55%
+    duration: 250
+- waitForAnimationToEnd:
+    timeout: 2000
+
+- extendedWaitUntil:
+    visible:
+      id: "list-business"
+    timeout: 8000
+- takeScreenshot: 05-switched-while-scrolled
+
+# Swipe back to Tech
+- swipe:
+    start: 15%, 55%
+    end: 85%, 55%
+    duration: 250
+- waitForAnimationToEnd:
+    timeout: 2000
+
+- extendedWaitUntil:
+    visible:
+      id: "list-tech"
+    timeout: 8000
+- takeScreenshot: 05-returned-to-tech

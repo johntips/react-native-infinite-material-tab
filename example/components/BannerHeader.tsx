@@ -3,9 +3,11 @@ import { StyleSheet, Text, View } from "react-native";
 
 export const BannerHeader: React.FC = () => {
   return (
-    <View style={styles.banner}>
+    <View style={styles.banner} testID="banner-header">
       <View style={styles.bannerPlaceholder} />
-      <Text style={styles.bannerTitle}>News App</Text>
+      <Text style={styles.bannerTitle} testID="banner-title">
+        News App
+      </Text>
       <Text style={styles.bannerSubtitle}>
         Infinite scroll tab view example
       </Text>
