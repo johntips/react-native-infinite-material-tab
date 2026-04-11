@@ -8,7 +8,7 @@
 # results, and a list of captured GIFs/screenshots.
 name: CI
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
