@@ -111,8 +111,8 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
   const [filterTag, setFilterTag] = useState<string | null>(null);
   const [imageReloadKey, setImageReloadKey] = useState(0);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [errorCount, setErrorCount] = useState(0);
+  const [_selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [_errorCount, setErrorCount] = useState(0);
 
   // --- ref (5個) ---
   const listRef = useRef(null);
@@ -125,12 +125,15 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
   const { scrollY } = useMockScrollTracking();
 
   // --- カスタムフック（並列）---
+  // 注意: 以下の destructured 値はパフォーマンス負荷シミュレーションのため意図的に
+  // 未使用 (underscore prefix で lint 除外)。hooks 自体は実行されて cost を発生させる。
   useMockScrollToTop(listRef);
-  const { handleRefresh, refreshing } = useMockThrottledRefresh({
-    onRefresh: async () => {
-      // noop
-    },
-  });
+  const { handleRefresh: _handleRefresh, refreshing: _refreshing } =
+    useMockThrottledRefresh({
+      onRefresh: async () => {
+        // noop
+      },
+    });
   const isNearby = useIsNearby(category.toLowerCase());
 
   // --- 非同期データ取得（重い、直列）---
@@ -139,12 +142,12 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
     enabled: true,
     delayMs: 300,
   });
-  const { data: userStats } = useMockQuery(
+  const { data: _userStats } = useMockQuery(
     `user-stats-${user.id}`,
     useCallback(() => ({ totalReads: 42, streak: 7 }), [user.id]),
     { delayMs: 200 },
   );
-  const { data: trendingTags } = useMockQuery(
+  const { data: _trendingTags } = useMockQuery(
     `trending-tags`,
     useCallback(() => ["AI", "Space", "Climate"], []),
     { delayMs: 150 },
@@ -217,7 +220,7 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
   }, []);
 
   // --- useCallback (5個、並列) ---
-  const handleScroll = useCallback(
+  const _handleScroll = useCallback(
     (e: { nativeEvent: { contentOffset: { y: number } } }) => {
       scrollPositionRef.current = e.nativeEvent.contentOffset.y;
       scrollY.value = e.nativeEvent.contentOffset.y;
@@ -225,15 +228,15 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
     [scrollY],
   );
 
-  const handleSortChange = useCallback(() => {
+  const _handleSortChange = useCallback(() => {
     setSortOrder((prev) => (prev === "desc" ? "asc" : "desc"));
   }, []);
 
-  const handleFilterClear = useCallback(() => {
+  const _handleFilterClear = useCallback(() => {
     setFilterTag(null);
   }, []);
 
-  const handleItemSelect = useCallback((id: string) => {
+  const _handleItemSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -242,7 +245,7 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
     });
   }, []);
 
-  const handleError = useCallback(() => {
+  const _handleError = useCallback(() => {
     setErrorCount((c) => c + 1);
   }, []);
 

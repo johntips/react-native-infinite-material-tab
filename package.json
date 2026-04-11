@@ -1,6 +1,6 @@
 {
   "name": "react-native-infinite-material-tab",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Infinite scroll Material Design tab view for React Native — built on PagerView + Reanimated for native-grade performance. Zero JS thread work during swipe gestures.",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

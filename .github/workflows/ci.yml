@@ -1,11 +1,18 @@
-# CI workflow — lint, typecheck, unit test, library build, example build,
-# Maestro E2E on iOS Simulator.
+# Default CI — runs on every push / PR.
 #
-# Artifacts: Maestro screenshots, recordings (converted to GIF for size),
-# JUnit reports. Retention: 7 days.
+# Keep this job set fast and deterministic (Linux only, no simulator).
+# It must catch the kinds of problems that block shipping:
 #
-# A sticky PR comment is posted with links to the artifact bundle, flow
-# results, and a list of captured GIFs/screenshots.
+#   - Lint / typecheck regressions in the library and example
+#   - Broken unit tests (including PagerView wiring regression guard —
+#     see src/__tests__/pagerview-wiring.test.ts)
+#   - Library `tsc` build produces valid lib/ output
+#   - Example metro bundle builds successfully (catches import-time
+#     crashes and dependency breakage the library would otherwise ship)
+#
+# Maestro iOS E2E is NOT part of default CI (too slow, needs macOS runner).
+# It lives in `.github/workflows/e2e.yml` and is run manually via
+# workflow_dispatch when a PR needs full device-level validation.
 name: CI
 
 "on":
@@ -21,7 +28,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   lint-test:
@@ -39,13 +45,13 @@ jobs:
         with:
           node-version: "20"
           cache: pnpm
-      - name: Install dependencies
+      - name: Install library deps
         run: pnpm install --frozen-lockfile
-      - name: Lint
+      - name: Lint (biome)
         run: pnpm lint
-      - name: Typecheck
+      - name: Typecheck (library)
         run: pnpm tsc --noEmit
-      - name: Unit test
+      - name: Unit test (includes PagerView wiring regression guard)
         run: pnpm test
 
   build-library:
@@ -64,44 +70,38 @@ jobs:
         with:
           node-version: "20"
           cache: pnpm
-      - name: Install dependencies
+      - name: Install library deps
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
       - name: Verify lib output exists
-        run: test -d lib && ls lib/
+        run: test -d lib && ls lib/ && test -f lib/index.d.ts
 
-  e2e-ios:
-    name: Maestro E2E (iOS Simulator)
-    # macos-15 ships Xcode 16.x by default (required by React Native 0.83+).
-    # Free for public repos.
-    runs-on: macos-15
+  build-example:
+    name: Build example (metro bundle)
+    # Bundling the example app with Metro catches:
+    #   - Import-time crashes in the library
+    #   - Missing/broken peer deps
+    #   - TypeScript errors the library-side tsc wouldn't see
+    # This runs on Linux (no iOS simulator needed) so it is cheap and fast.
+    runs-on: ubuntu-latest
     needs: build-library
-    timeout-minutes: 60
-    env:
-      MAESTRO_DRIVER_STARTUP_TIMEOUT: 120000
-      MAESTRO_CLI_NO_ANALYTICS: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: pnpm
-
-      - name: Install root deps
+      - name: Install library deps
         run: pnpm install --frozen-lockfile
-
       - name: Build library
         run: pnpm build
-
       - name: Install example deps
         working-directory: example
         run: |
@@ -110,323 +110,19 @@ jobs:
           else
             npm install --legacy-peer-deps
           fi
-
-      - name: Install Maestro CLI
-        run: |
-          curl -fsSL "https://get.maestro.mobile.dev" | bash
-          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
-
-      - name: Verify Maestro install
-        run: maestro --version
-
-      - name: Install ffmpeg
-        run: |
-          brew update > /dev/null || true
-          brew install ffmpeg
-
-      - name: Select latest Xcode and show environment
-        run: |
-          # RN 0.83+ requires Xcode >= 16.1 — pick the highest version installed
-          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-          echo "Using $LATEST"
-          sudo xcode-select -s "$LATEST/Contents/Developer"
-          xcodebuild -version
-          xcrun simctl list runtimes | grep iOS || true
-          xcrun simctl list devicetypes | grep iPhone || true
-
-      - name: Boot iOS Simulator
-        id: sim
-        run: |
-          set -euo pipefail
-          # Try iPhone 15 first, fall back to 14 / 13
-          for name in "iPhone 15" "iPhone 14" "iPhone 13"; do
-            if xcrun simctl list devicetypes | grep -q "$name"; then
-              DEVICE_NAME="$name"
-              break
-            fi
-          done
-          # Pick highest available iOS runtime
-          RUNTIME=$(xcrun simctl list runtimes | grep -E "^iOS " | tail -1 | awk '{print $NF}')
-          echo "Creating simulator: $DEVICE_NAME ($RUNTIME)"
-          UDID=$(xcrun simctl create "maestro-e2e" "$DEVICE_NAME" "$RUNTIME")
-          xcrun simctl boot "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-
-      - name: Expo prebuild (iOS)
-        working-directory: example
-        run: npx expo prebuild --platform ios --clean --non-interactive
-
-      - name: Install CocoaPods
-        working-directory: example/ios
-        run: pod install
-
-      - name: Build iOS example app
+      - name: Metro bundle (iOS, Release)
         working-directory: example
         run: |
-          set -euo pipefail
-          # .xcworkspace is a directory — use -d so ls returns the dir itself
-          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
-          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-          echo "Building workspace=$WORKSPACE scheme=$SCHEME"
-          xcodebuild \
-            -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphonesimulator \
-            -destination "generic/platform=iOS Simulator" \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            build
-
-      - name: Install example app on simulator
+          mkdir -p build
+          npx expo export:embed \
+            --platform ios \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output build/main.jsbundle \
+            --assets-dest build/assets
+      - name: Verify bundle output
         working-directory: example
         run: |
-          set -euo pipefail
-          APP_PATH=$(find build/Build/Products -type d -name "*.app" | head -1)
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::Could not find built .app"
-            find build -name "*.app" -type d || true
-            exit 1
-          fi
-          echo "Installing $APP_PATH"
-          xcrun simctl install booted "$APP_PATH"
-
-      - name: Start simulator screen recording
-        working-directory: example
-        run: |
-          mkdir -p .maestro/results
-          # recordVideo runs until SIGINT. Launch in background, capture PID.
-          xcrun simctl io booted recordVideo \
-            --codec=h264 \
-            --mask=ignored \
-            --force \
-            .maestro/results/e2e-session.mp4 &
-          echo $! > .maestro/results/recorder.pid
-          echo "Started recorder pid=$(cat .maestro/results/recorder.pid)"
-          # Give recorder a moment to open the output file
-          sleep 1
-
-      - name: Run Maestro flows
-        id: maestro
-        working-directory: example
-        continue-on-error: true
-        run: |
-          mkdir -p .maestro/results
-          maestro test .maestro/flows \
-            --format junit \
-            --output .maestro/results/junit.xml \
-            --debug-output .maestro/results/debug \
-            2>&1 | tee .maestro/results/maestro.log
-
-      - name: Stop simulator screen recording
-        if: always()
-        working-directory: example
-        run: |
-          set +e
-          if [ -f .maestro/results/recorder.pid ]; then
-            PID=$(cat .maestro/results/recorder.pid)
-            echo "Stopping recorder pid=$PID"
-            kill -INT "$PID" 2>/dev/null || true
-            # Wait up to 15s for the mp4 to be finalized
-            for i in $(seq 1 15); do
-              if ! kill -0 "$PID" 2>/dev/null; then
-                break
-              fi
-              sleep 1
-            done
-            # If still running, hard kill
-            kill -9 "$PID" 2>/dev/null || true
-          fi
-          ls -lh .maestro/results/e2e-session.mp4 2>/dev/null || echo "(no mp4)"
-
-      - name: Convert recording to GIF (size-optimized)
-        if: always()
-        working-directory: example
-        continue-on-error: true
-        run: |
-          set +e
-          mkdir -p .maestro/results/gifs
-          video=".maestro/results/e2e-session.mp4"
-          if [ ! -f "$video" ] || [ ! -s "$video" ]; then
-            echo "No usable mp4 to convert — skipping."
-            exit 0
-          fi
-          out=".maestro/results/gifs/e2e-session.gif"
-          echo "Converting $video → $out"
-          # fps=8, width=320, 64-color palette = ~1/20 of mp4 size
-          ffmpeg -y -i "$video" \
-            -vf "fps=8,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
-            -loop 0 "$out" 2>&1 | tail -5
-          if [ -f "$out" ]; then
-            echo "  mp4  size: $(du -h "$video" | cut -f1)"
-            echo "  gif  size: $(du -h "$out" | cut -f1)"
-          fi
-
-      - name: Summarize results (step summary)
-        if: always()
-        working-directory: example
-        run: |
-          {
-            echo "## 📱 Maestro E2E Results"
-            echo ""
-            if [ -f .maestro/results/junit.xml ]; then
-              python3 - <<'PY'
-          import xml.etree.ElementTree as ET, sys
-          try:
-              root = ET.parse(".maestro/results/junit.xml").getroot()
-          except Exception as e:
-              print(f"_junit parse failed: {e}_")
-              sys.exit(0)
-          suites = root.findall(".//testsuite") or [root]
-          total = failed = 0
-          rows = ["| Flow | Status | Time |", "|---|---|---|"]
-          for suite in suites:
-              for case in suite.findall("testcase"):
-                  total += 1
-                  name = case.get("name", "?")
-                  time = case.get("time", "?")
-                  if case.find("failure") is not None or case.find("error") is not None:
-                      failed += 1
-                      rows.append(f"| `{name}` | ❌ failed | {time}s |")
-                  else:
-                      rows.append(f"| `{name}` | ✅ passed | {time}s |")
-          passed = total - failed
-          emoji = "✅" if failed == 0 else "❌"
-          print(f"{emoji} **{passed}/{total} flows passed**")
-          print()
-          print("\n".join(rows))
-          PY
-            else
-              echo "_No JUnit report produced._"
-            fi
-            echo ""
-            echo "### GIF sizes"
-            if ls .maestro/results/gifs/*.gif >/dev/null 2>&1; then
-              echo '```'
-              du -h .maestro/results/gifs/*.gif
-              echo '```'
-            else
-              echo "_No GIFs produced._"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build PR comment body
-        if: github.event_name == 'pull_request' && always()
-        working-directory: example
-        run: |
-          ARTIFACT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          {
-            echo "## 📱 Maestro E2E Results"
-            echo ""
-            if [ -f .maestro/results/junit.xml ]; then
-              python3 - <<'PY'
-          import xml.etree.ElementTree as ET
-          try:
-              root = ET.parse(".maestro/results/junit.xml").getroot()
-              suites = root.findall(".//testsuite") or [root]
-              total = failed = 0
-              rows = []
-              for suite in suites:
-                  for case in suite.findall("testcase"):
-                      total += 1
-                      name = case.get("name", "?")
-                      time = case.get("time", "?")
-                      if case.find("failure") is not None or case.find("error") is not None:
-                          failed += 1
-                          rows.append(f"| `{name}` | ❌ failed | {time}s |")
-                      else:
-                          rows.append(f"| `{name}` | ✅ passed | {time}s |")
-              passed = total - failed
-              emoji = "✅" if failed == 0 else "❌"
-              print(f"{emoji} **{passed}/{total} flows passed**")
-              print()
-              print("| Flow | Status | Time |")
-              print("|---|---|---|")
-              print("\n".join(rows))
-          except Exception as e:
-              print(f"_junit parse failed: {e}_")
-          PY
-            else
-              echo "_No JUnit report produced — Maestro may have failed to launch._"
-            fi
-            echo ""
-            echo "### 🎬 Recordings (GIF)"
-            shopt -s nullglob
-            gifs=(.maestro/results/gifs/*.gif)
-            if [ ${#gifs[@]} -gt 0 ]; then
-              for g in "${gifs[@]}"; do
-                size=$(du -h "$g" | cut -f1)
-                echo "- \`$(basename "$g")\` — $size"
-              done
-            else
-              echo "_No recordings captured._"
-            fi
-            echo ""
-            echo "### 📸 Screenshots"
-            png_count=0
-            if [ -d .maestro/results/debug ]; then
-              png_count=$(find .maestro/results/debug -type f -name '*.png' 2>/dev/null | wc -l | tr -d ' ')
-            fi
-            if [ "$png_count" -gt 0 ]; then
-              echo "$png_count screenshots captured."
-            else
-              echo "_No screenshots captured._"
-            fi
-            echo ""
-            echo "---"
-            echo "[📥 Download artifact bundle]($ARTIFACT_URL) · [🔗 View run]($RUN_URL) · Artifact retention: 7 days"
-          } > .maestro/results/pr-comment.md
-          echo "--- pr-comment.md preview ---"
-          cat .maestro/results/pr-comment.md
-
-      - name: Post sticky PR comment
-        if: github.event_name == 'pull_request' && always()
-        uses: actions/github-script@v7
-        continue-on-error: true
-        with:
-          script: |
-            const fs = require('fs');
-            const path = 'example/.maestro/results/pr-comment.md';
-            if (!fs.existsSync(path)) {
-              core.warning(`pr-comment.md not found at ${path}`);
-              return;
-            }
-            const body = fs.readFileSync(path, 'utf8');
-            const marker = '<!-- maestro-e2e-sticky -->';
-            const fullBody = `${marker}\n${body}`;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-            const { data: comments } = await github.rest.issues.listComments({
-              owner, repo, issue_number, per_page: 100,
-            });
-            const existing = comments.find(c => c.body && c.body.startsWith(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner, repo, comment_id: existing.id, body: fullBody,
-              });
-              core.info(`Updated sticky comment ${existing.id}`);
-            } else {
-              await github.rest.issues.createComment({
-                owner, repo, issue_number, body: fullBody,
-              });
-              core.info('Created sticky comment');
-            }
-
-      - name: Upload Maestro artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: maestro-results-${{ github.run_id }}
-          path: |
-            example/.maestro/results/**
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: Fail job if Maestro failed
-        if: always() && steps.maestro.outcome == 'failure'
-        run: |
-          echo "::error::Maestro flows failed — see artifact and PR comment for details."
-          exit 1
+          test -f build/main.jsbundle
+          ls -lh build/main.jsbundle
+          echo "bundle size: $(du -h build/main.jsbundle | cut -f1)"
