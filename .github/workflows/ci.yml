@@ -165,7 +165,8 @@ jobs:
         working-directory: example
         run: |
           set -euo pipefail
-          WORKSPACE=$(ls ios/*.xcworkspace | head -1)
+          # .xcworkspace is a directory — use -d so ls returns the dir itself
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
           SCHEME=$(basename "$WORKSPACE" .xcworkspace)
           echo "Building workspace=$WORKSPACE scheme=$SCHEME"
           xcodebuild \
