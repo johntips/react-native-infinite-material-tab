@@ -193,6 +193,21 @@ jobs:
           echo "Installing $APP_PATH"
           xcrun simctl install booted "$APP_PATH"
 
+      - name: Start simulator screen recording
+        working-directory: example
+        run: |
+          mkdir -p .maestro/results
+          # recordVideo runs until SIGINT. Launch in background, capture PID.
+          xcrun simctl io booted recordVideo \
+            --codec=h264 \
+            --mask=ignored \
+            --force \
+            .maestro/results/e2e-session.mp4 &
+          echo $! > .maestro/results/recorder.pid
+          echo "Started recorder pid=$(cat .maestro/results/recorder.pid)"
+          # Give recorder a moment to open the output file
+          sleep 1
+
       - name: Run Maestro flows
         id: maestro
         working-directory: example
@@ -205,32 +220,49 @@ jobs:
             --debug-output .maestro/results/debug \
             2>&1 | tee .maestro/results/maestro.log
 
-      - name: Convert recordings to GIF (size-optimized)
+      - name: Stop simulator screen recording
         if: always()
         working-directory: example
         run: |
-          set -euo pipefail
+          set +e
+          if [ -f .maestro/results/recorder.pid ]; then
+            PID=$(cat .maestro/results/recorder.pid)
+            echo "Stopping recorder pid=$PID"
+            kill -INT "$PID" 2>/dev/null || true
+            # Wait up to 15s for the mp4 to be finalized
+            for i in $(seq 1 15); do
+              if ! kill -0 "$PID" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            # If still running, hard kill
+            kill -9 "$PID" 2>/dev/null || true
+          fi
+          ls -lh .maestro/results/e2e-session.mp4 2>/dev/null || echo "(no mp4)"
+
+      - name: Convert recording to GIF (size-optimized)
+        if: always()
+        working-directory: example
+        continue-on-error: true
+        run: |
+          set +e
           mkdir -p .maestro/results/gifs
-          # macOS ships bash 3.2 which lacks `shopt -s globstar`; use `find` instead.
-          if [ ! -d .maestro/results/debug ]; then
-            echo "No debug directory — Maestro did not run or produced no output."
+          video=".maestro/results/e2e-session.mp4"
+          if [ ! -f "$video" ] || [ ! -s "$video" ]; then
+            echo "No usable mp4 to convert — skipping."
             exit 0
           fi
-          mapfile -t videos < <(find .maestro/results/debug -type f -name '*.mp4' 2>/dev/null || true)
-          if [ ${#videos[@]} -eq 0 ]; then
-            echo "No .mp4 recordings found (Maestro may not have recorded)."
-            exit 0
+          out=".maestro/results/gifs/e2e-session.gif"
+          echo "Converting $video → $out"
+          # fps=8, width=320, 64-color palette = ~1/20 of mp4 size
+          ffmpeg -y -i "$video" \
+            -vf "fps=8,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
+            -loop 0 "$out" 2>&1 | tail -5
+          if [ -f "$out" ]; then
+            echo "  mp4  size: $(du -h "$video" | cut -f1)"
+            echo "  gif  size: $(du -h "$out" | cut -f1)"
           fi
-          for video in "${videos[@]}"; do
-            name=$(basename "$video" .mp4)
-            out=".maestro/results/gifs/${name}.gif"
-            echo "Converting $video → $out"
-            # fps=10, width=360, 64-color palette = massive size reduction
-            ffmpeg -y -i "$video" \
-              -vf "fps=10,scale=360:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
-              -loop 0 "$out" 2>&1 | tail -3
-            echo "  size: $(du -h "$out" | cut -f1)"
-          done
 
       - name: Summarize results (step summary)
         if: always()
