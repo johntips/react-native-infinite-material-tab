@@ -87,3 +87,64 @@ export const getCenterScrollPosition = (
   // 負の値は0にクランプ（左端より左にはスクロールできない）
   return Math.max(0, scrollX);
 };
+
+/**
+ * Decide whether the native pager is resting off-integer and, if so, which
+ * integer page it should be forced onto.
+ *
+ * The native pager (UIScrollView `pagingEnabled` on iOS, `ViewPager2` on
+ * Android) normally snaps to an integer page after deceleration finishes.
+ * When the JS thread is busy with first-mount children (heavy list
+ * layout, data-fetching hooks, image prefetch) during that deceleration,
+ * the UI thread's layout pass can interrupt the snap and leave the pager
+ * at a fractional scroll offset. The tab indicator has already moved to
+ * the target page via the 0.99 threshold in `onPageScroll`, so the UI
+ * appears settled while ~20-30% of the neighboring page is still showing.
+ *
+ * This helper is the pure logic decision: given the latest fraction
+ * reported by `onPageScroll` and the total number of virtual pages, it
+ * returns the target integer to snap to — or `null` if no snap is needed.
+ *
+ * Design notes:
+ * - Dimensionless. Takes a fraction (unit = pages), not a pixel distance.
+ *   The same thresholds work on 320px phones, 414px phones, and 768px
+ *   tablets without tuning.
+ * - Tolerant to float noise. Reports of `0.0000001` or `0.999999` are
+ *   treated as clean settles; only gaps larger than `TOLERANCE` trigger
+ *   a snap.
+ * - Math.round (not floor / ceil) — the native pager already decided
+ *   "which way" it was decelerating; we just complete the half it
+ *   couldn't finish.
+ * - NaN / Infinity / out-of-range guards. Called from `idle` state, which
+ *   can fire before the first `onPageScroll`, yielding an unwritten
+ *   SharedValue or an index outside the virtual page array.
+ *
+ * @param fraction - latest `position + offset` from `onPageScroll`
+ * @param pagesLength - total count of virtual pages
+ * @returns integer page to snap to, or `null` if already aligned / invalid
+ */
+export const resolveForcedSnapTarget = (
+  fraction: number,
+  pagesLength: number,
+): number | null => {
+  // Tolerance is in page units. `0.01` ≈ 1% of a page width.
+  // Below this is indistinguishable from a clean native snap; above this
+  // reliably indicates a real mid-decelerate abort on iOS simulators and
+  // physical devices.
+  const TOLERANCE = 0.01;
+
+  if (!Number.isFinite(fraction)) return null;
+  if (!Number.isFinite(pagesLength) || pagesLength <= 0) return null;
+  // Negative fractions can't happen on a healthy PagerView; treat them as
+  // invalid to avoid `Math.round(-0.4) === -0` leaking through the bounds
+  // check (`-0 >= 0` is true in JS).
+  if (fraction < 0) return null;
+
+  const rounded = Math.round(fraction);
+  if (rounded < 0 || rounded >= pagesLength) return null;
+
+  const delta = Math.abs(fraction - rounded);
+  if (delta <= TOLERANCE) return null;
+
+  return rounded;
+};

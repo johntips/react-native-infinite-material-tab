@@ -32,6 +32,7 @@ import { TabsProvider } from "./Context";
 import { SCREEN_WIDTH, TAB_BAR_HEIGHT } from "./constants";
 import { DefaultTabBar } from "./TabBar";
 import type { DebugLogEvent, TabsContainerProps } from "./types";
+import { resolveForcedSnapTarget } from "./utils";
 
 // react-native-pager-view v8 の JS 側 `_onPageScroll` wrapper は
 // `this.props.onPageScroll(e)` を関数呼び出しするため、Reanimated の
@@ -115,6 +116,11 @@ export const Container: React.FC<TabsContainerProps> = ({
 
   // Reanimated SharedValue for scroll tracking (collapsible-tab-view compatibility)
   const scrollY = useSharedValue(0);
+
+  // Latest horizontal page fraction (position + offset) as reported by
+  // onPageScroll. Used by handlePageScrollStateChanged to detect and repair
+  // non-integer stops (see forced-snap logic below).
+  const lastPageFraction = useSharedValue(0);
 
   // --- PagerView 用仮想ページ配列 ---
   // 仮想インデックス方式: tabs.length × BUFFER_MULTIPLIER の仮想ページを生成
@@ -271,6 +277,9 @@ export const Container: React.FC<TabsContainerProps> = ({
       "worklet";
       const position = event.position;
       const offset = event.offset;
+      // Track the latest fractional scroll position so the JS side can
+      // detect a non-integer resting offset once state transitions to idle.
+      lastPageFraction.value = position + offset;
       // offset が十分に 0 or 1 に近い時 = ページ確定
       if (offset < 0.01 || offset > 0.99) {
         const finalPosition = offset > 0.5 ? position + 1 : position;
@@ -373,7 +382,28 @@ export const Container: React.FC<TabsContainerProps> = ({
       }
 
       const jumpIndex = pendingJumpIndexRef.current;
-      if (jumpIndex === null) return;
+      if (jumpIndex === null) {
+        // Forced snap: the native pager occasionally comes to rest at a
+        // fractional offset when the JS thread is busy with first-time
+        // children mounts or layout recomputation during deceleration.
+        // The tab indicator has already snapped to the integer page via
+        // the 0.99 threshold in handlePageScrollHandler, but the PagerView
+        // itself stays stuck ~0.2-0.3 pages off, revealing the neighboring
+        // page on one side. When we reach idle state, consult the pure
+        // helper which decides whether a snap is needed (tolerance, bounds,
+        // and NaN guards live there and are covered by unit tests).
+        const fraction = lastPageFraction.value;
+        const rounded = resolveForcedSnapTarget(fraction, pages.length);
+        if (rounded !== null) {
+          try {
+            pagerRef.current?.setPageWithoutAnimation(rounded);
+          } catch {
+            // ViewPager2 recycling edge case on Android — swallow the same
+            // way the edge-wrap jump does below.
+          }
+        }
+        return;
+      }
 
       // Issue 2: idle 直前に再度 dragging になっていないか再チェック
       if (pageScrollStateRef.current !== "idle") return;
@@ -402,7 +432,7 @@ export const Container: React.FC<TabsContainerProps> = ({
         requestAnimationFrame(executeJump);
       }
     },
-    [triggerTabChange],
+    [triggerTabChange, lastPageFraction, pages.length],
   );
 
   // タブタップハンドラー
