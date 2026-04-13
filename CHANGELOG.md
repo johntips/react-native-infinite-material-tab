@@ -5,6 +5,147 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-04-13
+
+### 🔴 Fixed — Non-integer scroll rest after swipe ("bleed-through")
+
+Consumers with heavy first-mount content reported that the **first** swipe to
+a not-yet-mounted tab sometimes left the native pager at a fractional scroll
+offset (e.g. `2.3` or `3.7`) instead of snapping to the nearest integer page.
+The tab indicator had already jumped to the target page via the `0.99`
+threshold in `handlePageScrollHandler`, so the UI looked "settled", but the
+viewport was still showing ~20–30% of a neighboring page on one side. Users
+saw content, skeletons, or sold-out badges from an adjacent tab bleeding
+into the current tab.
+
+```
+  Pager scroll offset = 3.7  (stuck between page 3 and page 4)
+
+  ┌──────────────────────────────────┐
+  │  ←─ page 3 (30%) ─→ │←─ page 4 (70%) ─→│
+  │  neighboring tab    │   current tab     │
+  │  bleed-through      │   ("パックがありません"│
+  │                     │    or empty state) │
+  └──────────────────────────────────┘
+        indicator ↑ snapped to page 4 already
+```
+
+### Root cause
+
+During the first-ever swipe to a tab, the JS thread is busy with children
+mount, initial data-fetch subscriptions, and list layout (e.g. FlashList
+measuring each cell). The UI thread's layout recomputation interferes with
+the native pager's deceleration animation. `pagingEnabled` (iOS) /
+`ViewPager2` (Android) normally snap to an integer page, but the snap can
+abort early when a layout pass invalidates the viewport mid-decelerate.
+
+**Subsequent swipes to the same tab don't reproduce** — the mount has
+settled, there's no layout thrash, and the pager snaps cleanly.
+
+### Why the example app didn't surface this
+
+The example app used in local development and CI renders a trivial
+`FlatList` of placeholder strings. First mount cost is <20 ms, layout is
+stable, and the pager always has a clean deceleration window. Production
+consumers shipping real apps — with rich list items, data-fetching hooks,
+remote images, animation libraries, and nested providers — saturate the JS
+thread during first mount and expose the bug.
+
+The fix is now enforced at the library level so every consumer benefits
+regardless of their children's mount cost.
+
+### Fix: `lastPageFraction` + idle forced snap
+
+A new `lastPageFraction` `SharedValue` tracks the fractional scroll position
+(`position + offset`) every frame from inside the `onPageScroll` worklet.
+When `handlePageScrollStateChanged` observes the transition to `idle` with
+no pending edge-wrap jump, it reads the tracked fraction, rounds to the
+nearest integer, and calls `pagerRef.current.setPageWithoutAnimation` when
+the gap exceeds `0.01`. The tab indicator was already at the correct
+integer, so the pager silently catches up without any visible animation.
+
+- Tolerance is `0.01` — fractional reports from `onPageScroll` routinely
+  land at `0.0000001` or `0.999999` due to float math. Below `0.01` is
+  indistinguishable from a clean settle; above `0.01` reliably indicates a
+  real mid-decelerate abort observed on both iOS simulators and physical
+  devices.
+- Bounds & NaN guards (`Number.isFinite`, `rounded >= 0`,
+  `rounded < pages.length`) prevent the snap from firing before the first
+  scroll event or with an out-of-range index.
+- The `setPageWithoutAnimation` call is wrapped in `try/catch` mirroring
+  the existing edge-wrap jump's pattern, so Android ViewPager2's "Scrapped
+  or attached views may not be recycled" race is swallowed silently.
+
+### How to keep libraries of this shape robust — design principles
+
+This class of bug (native animation vs. JS-thread-heavy first mount) is
+**inherently invisible to minimal example apps**. The library's robustness
+against it has to be built in, not tested by hand. Guidelines applied in
+this release and recommended for any PagerView / ScrollView-backed library:
+
+1. **Defensive snap on every idle transition, not only "when we know it
+   went wrong"**. The implementation does not try to detect "was the JS
+   thread busy?" — it just always checks the fraction on idle. Zero cost
+   when the native snap worked correctly (the fraction is already an
+   integer so nothing happens), fully repairs the rare abort case.
+
+2. **Device-size independent**. The snap compares a scroll *fraction*
+   (dimensionless, bounded in `[0, N-1]`), never a pixel distance. Small
+   phones and tablets both land in `[0, 0.01)` when settled cleanly, so
+   the tolerance doesn't need device-specific tuning.
+
+3. **Track the fraction inside the worklet, read it from JS**. `SharedValue`
+   is the only correct crossing mechanism here — a React state or ref
+   updated via `runOnJS` would be stale (post-settle). Writing from the
+   `onPageScroll` worklet means the JS side always sees the most recent
+   native position.
+
+4. **Round, don't compute "intended direction"**. Trying to infer "the
+   user wanted to go forward / back" from scroll velocity or gesture data
+   is fragile across gesture systems. `Math.round` of the current fraction
+   is correct because the native pager already decided how far to
+   decelerate; we just complete what it couldn't finish due to JS thread
+   interference.
+
+5. **Match the existing `try/catch` / re-entrancy pattern**. The library
+   already had one mid-idle jump (`pendingJumpIndexRef` edge-wrap) guarded
+   against ViewPager2's recycle race. The forced snap reuses that exact
+   shape so the two code paths can't diverge.
+
+### Regression guards added
+
+- **Unit test** (`src/__tests__/idle-forced-snap.test.ts`): static source
+  scans verifying
+  - `lastPageFraction` is declared as a `SharedValue(0)`
+  - the `onPageScroll` worklet writes `position + offset` to it
+  - the `idle` branch of `handlePageScrollStateChanged` reads the fraction,
+    rounds it, compares against `> 0.01`, and calls
+    `setPageWithoutAnimation(rounded)`
+  - bounds (`Number.isFinite`, `rounded >= 0`, `rounded < pages.length`)
+    and `try/catch` wrapping are present
+- **Numeric edge-case suite** (`src/__tests__/forced-snap-logic.test.ts`):
+  runtime tests of the rounding/tolerance logic extracted into a pure
+  helper, covering:
+  - clean settles (`0`, `2.0`, `5.0`, `0.0000001`, `4.999999`) → no snap
+  - real aborts (`2.3`, `3.7`, `1.15`, `4.85`) → snap to the nearest page
+  - invalid inputs (`NaN`, `Infinity`, `-1.2`, `>= pages.length`) → no snap
+  - screen-size independence: the same fractions produce the same decisions
+    on simulated 320px (small phone), 414px (regular phone), and 768px
+    (tablet) page widths
+
+### No breaking changes
+
+The forced snap only activates when the pager rests off-integer; swipes
+that already settle cleanly never trigger it. The public API is unchanged.
+
+### Migration
+
+```bash
+pnpm add react-native-infinite-material-tab@0.2.2
+cd ios && pod install
+pnpm start -- --clear
+```
+
 ## [0.2.1] - 2026-04-11
 
 ### 🔴 Fixed — Fabric crash: `onPageScroll is not a function (it is Object)`
