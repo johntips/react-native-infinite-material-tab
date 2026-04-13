@@ -62,27 +62,54 @@ export function useMockEventCenter() {
 /**
  * データ取得フック（模擬 API fetch、300ms 遅延）
  * 実アプリの useQuery に相当。
+ *
+ * 追加オプション (README の "Performance Best Practices" と対応):
+ *   - refetchIntervalMs: 周期的な refetch 間隔 (ミリ秒)
+ *   - refetchWhenUnfocused: false の場合、isFocused=false のタブでは
+ *     interval tick を skip する。全タブが同時に tick することによる
+ *     JS thread の定期的な占有を避け、library の forced-snap (idle
+ *     event 発火) を邪魔しないようにする。
+ *   - isFocused: refetchWhenUnfocused=false のときに参照される focus 状態。
+ *
+ * enabled は「一度でも true になったら以降 true のまま」にする sticky
+ * パターンを consumer 側で作るのがおすすめ (README の pattern 1 参照)。
  */
 export function useMockQuery<T>(
   key: string,
   fetcher: () => T,
-  options?: { enabled?: boolean; delayMs?: number },
+  options?: {
+    enabled?: boolean;
+    delayMs?: number;
+    refetchIntervalMs?: number;
+    refetchWhenUnfocused?: boolean;
+    isFocused?: boolean;
+  },
 ): { data: T | undefined; isPending: boolean; refetch: () => void } {
   const [data, setData] = useState<T | undefined>(undefined);
   const [isPending, setIsPending] = useState(true);
   const enabled = options?.enabled ?? true;
   const delayMs = options?.delayMs ?? 300;
+  const refetchIntervalMs = options?.refetchIntervalMs;
+  const refetchWhenUnfocused = options?.refetchWhenUnfocused ?? true;
+  const isFocused = options?.isFocused ?? true;
+
+  // fetcher を ref に保持して、interval / effect が fetcher identity
+  // 変化で破棄されないようにする (library example の fetcher は毎 render で
+  // 作り直されがち)
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
 
   const refetch = useCallback(() => {
     if (!enabled) return;
     setIsPending(true);
     const timer = setTimeout(() => {
-      setData(fetcher());
+      setData(fetcherRef.current());
       setIsPending(false);
     }, delayMs);
     return () => clearTimeout(timer);
-  }, [enabled, fetcher, delayMs]);
+  }, [enabled, delayMs]);
 
+  // 初回フェッチ
   useEffect(() => {
     if (!enabled) {
       setIsPending(false);
@@ -90,6 +117,20 @@ export function useMockQuery<T>(
     }
     refetch();
   }, [enabled, refetch]);
+
+  // 周期 refetch: refetchWhenUnfocused=false のときは isFocused が true の
+  // 間だけ tick する。フォーカス外タブで interval を止める = library の
+  // forced-snap が idle event を逃さず発火できる環境を維持。
+  useEffect(() => {
+    if (!enabled) return;
+    if (!refetchIntervalMs || refetchIntervalMs <= 0) return;
+    if (!refetchWhenUnfocused && !isFocused) return;
+
+    const timer = setInterval(() => {
+      setData(fetcherRef.current());
+    }, refetchIntervalMs);
+    return () => clearInterval(timer);
+  }, [enabled, refetchIntervalMs, refetchWhenUnfocused, isFocused]);
 
   return { data, isPending, refetch };
 }

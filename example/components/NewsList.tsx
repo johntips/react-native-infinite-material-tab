@@ -102,6 +102,22 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
 }: {
   category: string;
 }) {
+  // --- Per-tab isFocused (README: best practice #2) ---
+  // 親から isFocused を prop で受け取ると tab change 時に全 tab が
+  // re-render する。ここでは tab name を直接 store 相当 (SharedValue 経由の
+  // hook) から参照し、current/previous の 2 タブだけが re-render するように
+  // する。
+  const activeIndex = useActiveTabIndexValue();
+  const tabs = useTabs();
+  const tabName = category.toLowerCase();
+  const isFocused = tabs[activeIndex]?.name === tabName;
+
+  // --- Sticky enabled (README: best practice #1) ---
+  // 一度 focus されたら以降 enabled は true 固定。swipe で flip させると
+  // subscription restart + refetch が毎回走って JS thread を占有する。
+  const queryEnabledRef = useRef(false);
+  if (isFocused) queryEnabledRef.current = true;
+
   // --- Context / Store 参照（軽量、並列）---
   const { authenticated, user } = useMockAuth();
   const { pendingInvalidation, pendingToast, clearPending } = useMockStore();
@@ -137,20 +153,33 @@ const HeavyNewsListContent = memo(function HeavyNewsListContent({
   const isNearby = useIsNearby(category.toLowerCase());
 
   // --- 非同期データ取得（重い、直列）---
+  // Best practice #1 のフル適用: enabled は sticky、refetchInterval は
+  // isFocused ゲート。N タブ同時の定期通信による JS thread 占有を回避し、
+  // library の forced-snap (onPageScrollStateChanged:idle) が安定発火する
+  // 環境を維持する。
   const fetcher = useCallback(() => getNewsByCategory(category), [category]);
   const { data, isPending } = useMockQuery(`news-${category}`, fetcher, {
-    enabled: true,
+    enabled: queryEnabledRef.current,
     delayMs: 300,
+    refetchIntervalMs: 5 * 60 * 1000, // 5 分
+    refetchWhenUnfocused: false,
+    isFocused,
   });
   const { data: _userStats } = useMockQuery(
     `user-stats-${user.id}`,
     useCallback(() => ({ totalReads: 42, streak: 7 }), [user.id]),
-    { delayMs: 200 },
+    {
+      enabled: queryEnabledRef.current,
+      delayMs: 200,
+    },
   );
   const { data: _trendingTags } = useMockQuery(
     `trending-tags`,
     useCallback(() => ["AI", "Space", "Climate"], []),
-    { delayMs: 150 },
+    {
+      enabled: queryEnabledRef.current,
+      delayMs: 150,
+    },
   );
 
   useMockImagePrefetch(data ?? []);

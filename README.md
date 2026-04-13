@@ -220,6 +220,193 @@ Frame budget (16ms):    │                              │
                         └──────────────────────────────┘
 ```
 
+## Performance Best Practices for Consumer Apps
+
+The library handles swipe gestures on the **native / UI thread** (see _Thread
+Architecture_ above), but a few of its self-healing behaviors rely on
+`onPageScrollStateChanged:idle` firing promptly after a swipe. If the JS
+thread is busy at that moment — running periodic `refetchInterval`s across
+every mounted tab, cascading re-renders, or first-mount layout for heavy
+lists — the idle event can be delayed or skipped, and the native pager can
+come to rest at a **fractional offset**: the indicator snaps to the new tab
+but ~20-30% of a neighbouring page is still visible. The library's internal
+forced-snap covers this case (v0.2.2+), but only when idle actually fires.
+
+**The practical rule: keep the JS thread quiet during and immediately after a
+swipe, even when your pages look heavy.** The patterns below are what made
+the difference in production apps with dozens of tabs and heavy lists.
+
+### 1. Stable subscription, focus-gated refetch cadence
+
+With React Query (or any similar data layer), the naive pattern
+`enabled: isFocused` causes the query subscription to tear down and
+re-establish every time the user swipes away from a tab and back. Each
+flip costs 50-100 ms of JS work. Better: **keep the subscription alive once
+focused**, and gate only the **periodic** refetch by focus state.
+
+```tsx
+function ArticleTab({ category, isFocused }: Props) {
+  // Once a tab has been focused even once, keep its subscription stable.
+  // No more restart/refetch storms on rapid back-and-forth swipes.
+  const stickyEnabledRef = useRef(false);
+  if (isFocused) stickyEnabledRef.current = true;
+
+  const { data } = useQuery({
+    queryKey: ['articles', category],
+    queryFn: () => fetchArticles(category),
+    enabled: stickyEnabledRef.current,
+
+    // 👇 gate *only* the periodic refetch by focus state.
+    // Otherwise every mounted tab keeps firing the interval
+    // concurrently, spiking JS thread load every few minutes.
+    refetchInterval: isFocused ? 5 * 60 * 1000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+  });
+
+  return <List data={data} />;
+}
+```
+
+Why this matters: with N tabs, the naive pattern fires **N parallel
+intervals**. With the gated pattern, only the focused tab ticks — the same
+request volume as the "enabled: isFocused" pattern, but without the
+subscription restart cost during swipes.
+
+### 2. Per-tab `isFocused` derived from the store, not from a parent state flip
+
+If the tab-change callback flips a React state on a parent component, every
+mounted tab re-renders, and each of their `isFocused` transitions fires a
+cascade of effects. Derive `isFocused` **per tab, directly from the store**
+so only two tabs re-render per change (the one you left and the one you
+entered) — not all N.
+
+```tsx
+// ❌ Parent state flip → all N tabs re-render cascade
+function Parent() {
+  const [displayedTab, setDisplayedTab] = useState('home');
+  return (
+    <Tabs.Container onTabChange={(e) => setDisplayedTab(e.tabName)}>
+      {tabs.map((t) => (
+        <Tabs.Tab key={t.name} name={t.name} label={t.label}>
+          <TabContent isFocused={displayedTab === t.name} />
+        </Tabs.Tab>
+      ))}
+    </Tabs.Container>
+  );
+}
+
+// ✅ Each tab subscribes to the store by name — only the old & new focused
+//    tabs re-render on change.
+function TabContent({ tabName }: { tabName: string }) {
+  const isFocused = useTabStore((s) => s.activeTabName === tabName);
+  // ...
+}
+```
+
+### 3. Stable `Tabs.Container` props
+
+Inline function props and inline style objects produce a new reference on
+every parent render, which forces `Tabs.Container` to re-examine its
+children. Move styles to module constants (or `StyleSheet.create`) and wrap
+`renderHeader` / `renderTabBar` in `useCallback`.
+
+```tsx
+// ❌ New reference on every render
+<Tabs.Container
+  renderHeader={() => <Header />}
+  renderTabBar={(p) => <MaterialTabBar {...p} indicatorStyle={{ height: 2 }} />}
+  containerStyle={{ flex: 1 }}
+/>
+
+// ✅ Stable references
+const CONTAINER_STYLE = { flex: 1 } as const;
+const INDICATOR_STYLE = { height: 2 } as const;
+
+function Screen() {
+  const renderHeader = useCallback(() => <Header />, []);
+  const renderTabBar = useCallback(
+    (p: TabBarProps) => <MaterialTabBar {...p} indicatorStyle={INDICATOR_STYLE} />,
+    [],
+  );
+
+  return (
+    <Tabs.Container
+      renderHeader={renderHeader}
+      renderTabBar={renderTabBar}
+      containerStyle={CONTAINER_STYLE}
+    >
+      {/* ... */}
+    </Tabs.Container>
+  );
+}
+```
+
+### 4. Gate heavy child mount behind `InteractionManager`
+
+The library promises 60fps **swipe** via the native pager — but a freshly
+mounted heavy child (big list, many hooks, fresh data fetch) will block the
+JS thread for hundreds of ms immediately after the swipe lands. Render a
+cheap skeleton first, then mount the heavy content after
+`InteractionManager.runAfterInteractions`. This defers the JS cost until the
+pager has finished settling, so forced-snap runs on an uncontested thread.
+
+```tsx
+function ArticleTab({ category }: { category: string }) {
+  const activeIndex = useActiveTabIndexValue();
+  const tabs = useTabs();
+  const isFocused = tabs[activeIndex]?.name === category;
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!isFocused || ready) return;
+    const handle = InteractionManager.runAfterInteractions(() => setReady(true));
+    return () => handle.cancel();
+  }, [isFocused, ready]);
+
+  return ready ? <HeavyList category={category} /> : <Skeleton />;
+}
+```
+
+### 5. Throttle per-swipe side effects (image reload, haptics etc.)
+
+Callbacks like "reload images on tab return to work around native image
+cache eviction" should **not** fire on every swipe — a quick back-and-forth
+is not a genuine tab return. Guard them by the time the tab was
+un-focused:
+
+```tsx
+const lastUnfocusedAtRef = useRef(Date.now());
+const prevFocusedRef = useRef(isFocused);
+
+useEffect(() => {
+  if (!prevFocusedRef.current && isFocused) {
+    const elapsed = Date.now() - lastUnfocusedAtRef.current;
+    if (elapsed > 2000) {
+      // Genuine return after 2s+ — reload
+      setImageReloadKey((k) => k + 1);
+    }
+  }
+  if (prevFocusedRef.current && !isFocused) {
+    lastUnfocusedAtRef.current = Date.now();
+  }
+  prevFocusedRef.current = isFocused;
+}, [isFocused]);
+```
+
+### Why these compound
+
+Any single pattern above helps; applied together they turn a JS-heavy
+consumer into one where the native pager's deceleration completes cleanly
+and `onPageScrollStateChanged:idle` fires on time — which is what allows
+the library's forced-snap to keep the pager pixel-aligned with the tab
+indicator under load. In a production consumer migrating from
+`react-native-collapsible-tab-view`, adopting patterns 1-5 together moved
+worst-case JS thread block from **~2,800 ms → ~990 ms** on fast repeated
+swipes, and eliminated the fractional-stop bleed-through entirely.
+
+See `example/` for a runnable app that follows all of the patterns above.
+
 ## Features
 
 - **PagerView** — native page gestures, 60fps guaranteed
